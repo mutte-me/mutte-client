@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   build:
+    if: github.repository == 'mutte-me/mutte-client'
     name: ${{ matrix.platform }}
     permissions:
       contents: read
@@ -153,7 +154,7 @@ jobs:
           retention-days: 30
 
   notarize:
-    if: github.ref_type == 'tag'
+    if: github.repository == 'mutte-me/mutte-client' && github.ref_type == 'tag'
     needs: build
     name: notarize-${{ matrix.platform }}
     strategy:
@@ -239,7 +240,7 @@ jobs:
           exit 1
 
   release:
-    if: github.ref_type == 'tag'
+    if: github.repository == 'mutte-me/mutte-client' && github.ref_type == 'tag'
     needs: [build, notarize]
     runs-on: ubuntu-24.04
     permissions:
