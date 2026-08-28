@@ -46,7 +46,7 @@ jobs:
           key: client-release-${{ matrix.runner }}-${{ hashFiles('Cargo.lock') }}
       - name: Build release binary
         run: cargo build --locked --release --package mutte
-      - name: Sign and notarize macOS binary
+      - name: Sign and submit macOS binary for notarization
         if: runner.os == 'macOS' && github.ref_type == 'tag'
         env:
           APPLE_DEVELOPER_ID_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
@@ -69,11 +69,13 @@ jobs:
             fi
           done
 
+          umask 077
           certificate_path="$RUNNER_TEMP/developer-id.p12"
           notary_key_path="$RUNNER_TEMP/notary-key.p8"
           keychain_path="$RUNNER_TEMP/mutte-signing.keychain-db"
           keychain_password="$(openssl rand -hex 32)"
           notarization_archive="$RUNNER_TEMP/mutte-notarization.zip"
+          submission_path="$RUNNER_TEMP/notary-submission.json"
 
           printf '%s' "$APPLE_DEVELOPER_ID_P12_BASE64" | \
             openssl base64 -d -A > "$certificate_path"
@@ -117,7 +119,17 @@ jobs:
             --key "$notary_key_path" \
             --key-id "$APPLE_NOTARY_KEY_ID" \
             --issuer "$APPLE_NOTARY_ISSUER_ID" \
-            --wait
+            --output-format json > "$submission_path"
+          jq -er '.id | select(type == "string" and length > 0)' \
+            "$submission_path"
+      - name: Upload notarization submission
+        if: runner.os == 'macOS' && github.ref_type == 'tag'
+        uses: actions/upload-artifact@v7
+        with:
+          name: notary-${{ matrix.platform }}
+          path: ${{ runner.temp }}/notary-submission.json
+          if-no-files-found: error
+          retention-days: 7
       - name: Package binary and checksum
         env:
           PLATFORM: ${{ matrix.platform }}
@@ -140,9 +152,95 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  release:
+  notarize:
     if: github.ref_type == 'tag'
     needs: build
+    name: notarize-${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-aarch64
+            runner: macos-15
+          - platform: macos-x86_64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: notary-${{ matrix.platform }}
+          path: notary
+      - name: Wait for Apple notarization acceptance
+        env:
+          APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          for name in \
+            APPLE_NOTARY_KEY_P8_BASE64 \
+            APPLE_NOTARY_KEY_ID \
+            APPLE_NOTARY_ISSUER_ID; do
+            if [ -z "${!name:-}" ]; then
+              echo "Missing required macOS notarization secret: $name" >&2
+              exit 1
+            fi
+          done
+
+          umask 077
+          submission_path="$GITHUB_WORKSPACE/notary/notary-submission.json"
+          submission_id="$(jq -er \
+            '.id | select(type == "string" and length > 0)' \
+            "$submission_path")"
+          notary_key_path="$RUNNER_TEMP/notary-key.p8"
+          status_path="$RUNNER_TEMP/notary-status.json"
+          deadline=$((SECONDS + 9900))
+
+          printf '%s' "$APPLE_NOTARY_KEY_P8_BASE64" | \
+            openssl base64 -d -A > "$notary_key_path"
+
+          show_notarization_log() {
+            xcrun notarytool log "$submission_id" \
+              --key "$notary_key_path" \
+              --key-id "$APPLE_NOTARY_KEY_ID" \
+              --issuer "$APPLE_NOTARY_ISSUER_ID" || true
+          }
+
+          while ((SECONDS < deadline)); do
+            xcrun notarytool info "$submission_id" \
+              --key "$notary_key_path" \
+              --key-id "$APPLE_NOTARY_KEY_ID" \
+              --issuer "$APPLE_NOTARY_ISSUER_ID" \
+              --output-format json > "$status_path"
+            status="$(jq -er '.status' "$status_path")"
+            echo "Apple notarization status for $submission_id: $status"
+
+            case "$status" in
+              Accepted)
+                exit 0
+                ;;
+              Invalid|Rejected)
+                show_notarization_log
+                exit 1
+                ;;
+              "In Progress")
+                sleep 30
+                ;;
+              *)
+                echo "Unexpected Apple notarization status: $status" >&2
+                show_notarization_log
+                exit 1
+                ;;
+            esac
+          done
+
+          echo "Apple notarization did not finish within 165 minutes" >&2
+          show_notarization_log
+          exit 1
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [build, notarize]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

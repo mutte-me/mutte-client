@@ -26,7 +26,9 @@ The client connects to `https://api.mutte.me` by default. Use
 `MUTTE_SERVER=https://another-relay.example` to select a compatible relay.
 
 Prebuilt, checksummed Linux x86_64/ARM64 and macOS Intel/Apple Silicon archives
-will be attached to tagged releases after the signing gate is enabled.
+are attached to tagged releases. macOS binaries are signed with Developer ID,
+submitted to Apple, and the release remains blocked until both architectures are
+accepted by the notarization service.
 
 ## Platform behavior
 
