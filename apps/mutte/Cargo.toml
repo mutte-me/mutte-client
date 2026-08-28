@@ -6,7 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 description = "Quiet, encrypted, terminal-first chat for Linux and macOS"
 homepage = "https://mutte.me"
-repository = "https://github.com/yuramelesh/mutte-client"
+repository = "https://github.com/mutte-me/mutte-client"
 
 [dependencies]
 anyhow.workspace = true

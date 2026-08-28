@@ -10,7 +10,7 @@ alphas, and relay images are unsupported.
 
 Do not open a public issue for a suspected vulnerability. Use GitHub's
 **Security → Report a vulnerability** flow in the public
-`yuramelesh/mutte-client` repository so the report and follow-up remain private.
+`mutte-me/mutte-client` repository so the report and follow-up remain private.
 If that control is unavailable, contact the maintainer through their GitHub
 profile without including sensitive details and request a private channel.
 

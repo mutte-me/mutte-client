@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-repository="yuramelesh/mutte-client"
+repository="mutte-me/mutte-client"
 version="${MUTTE_VERSION:-}"
 staged_binary=""
 temporary_dir=""
