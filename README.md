@@ -14,7 +14,7 @@ credentials are not published here.
 ## Install
 
 ```bash
-curl -sfL https://get.mutte.me | sh -
+curl -sfL https://raw.githubusercontent.com/yuramelesh/mutte-client/main/scripts/install-client.sh | sh -
 ```
 
 The installer detects Linux or macOS and the native CPU architecture, downloads
@@ -26,7 +26,7 @@ command to upgrade. Set `MUTTE_VERSION=v0.1.0-alpha.2` to pin a release or
 To inspect the installer before running it:
 
 ```bash
-curl -sfL https://get.mutte.me -o install-mutte.sh
+curl -sfL https://raw.githubusercontent.com/yuramelesh/mutte-client/main/scripts/install-client.sh -o install-mutte.sh
 less install-mutte.sh
 sh install-mutte.sh
 ```
