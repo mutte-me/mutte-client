@@ -11,7 +11,27 @@ credentials are not published here.
 > Mutte is alpha software. Its external protocol, cryptography, backend, and
 > client audits are not complete. Do not rely on it for high-risk communication.
 
-## Install from source
+## Install
+
+```bash
+curl -sfL https://get.mutte.me | sh -
+```
+
+The installer detects Linux or macOS and the native CPU architecture, downloads
+the newest published archive, verifies its SHA-256 checksum, and installs
+`mutte` into `~/.local/bin`. It does not require Rust or `cargo`. Re-run the same
+command to upgrade. Set `MUTTE_VERSION=v0.1.0-alpha.2` to pin a release or
+`MUTTE_INSTALL_DIR=/another/bin` to choose the destination.
+
+To inspect the installer before running it:
+
+```bash
+curl -sfL https://get.mutte.me -o install-mutte.sh
+less install-mutte.sh
+sh install-mutte.sh
+```
+
+## Build from source
 
 The pinned toolchain is Rust 1.98. Linux also needs `pkg-config` and the D-Bus
 development headers; macOS needs the Xcode Command Line Tools.
@@ -19,7 +39,7 @@ development headers; macOS needs the Xcode Command Line Tools.
 ```bash
 git clone https://github.com/yuramelesh/mutte-client.git
 cd mutte-client
-./scripts/install-client.sh
+cargo build --locked --release --package mutte
 ```
 
 The client connects to `https://api.mutte.me` by default. Use
