@@ -1,0 +1,22 @@
+[package]
+name = "mutte"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Quiet, encrypted, terminal-first chat for Linux and macOS"
+homepage = "https://mutte.me"
+repository = "https://github.com/yuramelesh/mutte-client"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+crossterm.workspace = true
+mutte-client = { path = "../../crates/mutte-client" }
+mutte-core = { path = "../../crates/mutte-core" }
+mutte-protocol = { path = "../../crates/mutte-protocol" }
+mutte-store = { path = "../../crates/mutte-store" }
+ratatui.workspace = true
+tokio.workspace = true
+url.workspace = true
+uuid.workspace = true

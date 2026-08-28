@@ -1,0 +1,865 @@
+openapi: 3.1.0
+info:
+  title: Mutte Relay API
+  version: 0.8.0-alpha
+  description: >-
+    Versioned contract for the ciphertext-only Mutte relay. Message bodies and
+    attachment bytes are opaque to the relay. WebSocket and push events are
+    hints; the authenticated mailbox is authoritative.
+x-mutte-contract:
+  status: frozen
+  frozen-at: "2026-08-27"
+  protocol: mutte/0.8-alpha
+  compatibility: additive-only
+  breaking-change-requires: protocol-version-bump
+  error-semantics: contracts/error-semantics.json
+  applied-migrations: immutable
+x-mutte-global-responses:
+  "429":
+    description: All `/v1` operations can return `rate_limited`; retry only after the `Retry-After` delay.
+    $ref: "#/components/responses/RateLimited"
+servers:
+  - url: https://api-staging.mutte.me
+    description: Staging
+  - url: https://api.mutte.me
+    description: Production
+tags:
+  - name: service
+  - name: authorization
+  - name: account
+  - name: mailbox
+  - name: attachments
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      tags: [service]
+      summary: Process liveness
+      security: []
+      responses:
+        "200":
+          description: Relay process is alive
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Health"}
+  /ready:
+    get:
+      tags: [service]
+      summary: Dependency readiness
+      security: []
+      responses:
+        "200":
+          description: Relay can reach its database
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Health"}
+        "503": {$ref: "#/components/responses/Error"}
+  /v1/devices:
+    get:
+      tags: [account]
+      summary: List account devices
+      responses:
+        "200":
+          description: Account devices
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/DeviceList"}
+        "401": {$ref: "#/components/responses/Error"}
+    post:
+      tags: [authorization]
+      summary: Start terminal authorization
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/DeviceStart"}
+      responses:
+        "200":
+          description: Pending device authorization
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/DeviceAuthorization"}
+        "400": {$ref: "#/components/responses/Error"}
+  /v1/devices/current/push:
+    put:
+      tags: [account]
+      summary: Upsert this device's push registration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/PushRegistrationUpsert"}
+      responses:
+        "204": {description: Registration stored; the provider token is never returned}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Error"}
+    delete:
+      tags: [account]
+      summary: Delete this device's push registration
+      responses:
+        "204": {description: Registration and queued push work deleted}
+        "401": {$ref: "#/components/responses/Error"}
+  /v1/devices/{device_id}:
+    parameters:
+      - {$ref: "#/components/parameters/DeviceId"}
+    get:
+      tags: [authorization]
+      summary: Poll a pending terminal authorization
+      description: >-
+        An approved access token is returned exactly once and is then removed
+        from the authorization row. The client must persist it before retrying;
+        a lost successful response requires a new device authorization.
+      security:
+        - deviceSecret: []
+      responses:
+        "200":
+          description: Authorization status
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/DeviceStatus"}
+        "401": {$ref: "#/components/responses/Error"}
+  /v1/passkeys/register/start:
+    post:
+      tags: [authorization]
+      summary: Begin first-account passkey registration
+      description: The pending device id binds the server-side single-use ceremony; the device secret is used only by the terminal polling endpoint.
+      security: []
+      requestBody: {$ref: "#/components/requestBodies/JsonObject"}
+      responses:
+        "200": {$ref: "#/components/responses/Ceremony"}
+        "400": {$ref: "#/components/responses/Error"}
+  /v1/passkeys/register/finish:
+    post:
+      tags: [authorization]
+      summary: Finish passkey registration and authorize the terminal
+      security: []
+      requestBody: {$ref: "#/components/requestBodies/JsonObject"}
+      responses:
+        "204": {description: Registered}
+        "400": {$ref: "#/components/responses/Error"}
+  /v1/passkeys/login/start:
+    post:
+      tags: [authorization]
+      summary: Begin passkey login for a pending terminal
+      description: The pending device id binds the server-side single-use ceremony; the device secret is used only by the terminal polling endpoint.
+      security: []
+      requestBody: {$ref: "#/components/requestBodies/JsonObject"}
+      responses:
+        "200": {$ref: "#/components/responses/Ceremony"}
+        "400": {$ref: "#/components/responses/Error"}
+  /v1/passkeys/login/finish:
+    post:
+      tags: [authorization]
+      summary: Finish passkey login and authorize the terminal
+      security: []
+      requestBody: {$ref: "#/components/requestBodies/JsonObject"}
+      responses:
+        "204": {description: Authorized}
+        "400": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/QuotaExceeded"}
+  /v1/email/start:
+    post:
+      tags: [authorization]
+      summary: Send a one-time authorization link
+      description: The pending device id binds the one-time email claim; the device secret is used only by the terminal polling endpoint.
+      security: []
+      requestBody: {$ref: "#/components/requestBodies/JsonObject"}
+      responses:
+        "202": {description: Link accepted for delivery}
+        "400": {$ref: "#/components/responses/Error"}
+  /v1/email/finish:
+    post:
+      tags: [authorization]
+      summary: Consume a one-time authorization link
+      security: []
+      requestBody: {$ref: "#/components/requestBodies/JsonObject"}
+      responses:
+        "204": {description: Authorized}
+        "400": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/QuotaExceeded"}
+  /v1/device-revocations:
+    post:
+      tags: [account]
+      summary: Start revoking an account device
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/DeviceRevocationStart"}
+      responses:
+        "200":
+          description: Pending revocation
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/DeviceRevocationAuthorization"}
+        "400": {$ref: "#/components/responses/Error"}
+  /v1/device-revocations/{request_id}:
+    parameters:
+      - {$ref: "#/components/parameters/RequestId"}
+    get:
+      tags: [account]
+      summary: Poll device revocation state
+      responses:
+        "200":
+          description: Revocation state
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/DeviceRevocationStatus"}
+        "401": {$ref: "#/components/responses/Error"}
+  /v1/device-revocations/details:
+    post:
+      tags: [authorization]
+      summary: Resolve a browser revocation request
+      security: []
+      requestBody: {$ref: "#/components/requestBodies/JsonObject"}
+      responses:
+        "200":
+          description: Safe target-device details
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        "400": {$ref: "#/components/responses/Error"}
+  /v1/device-revocations/passkey/start:
+    post:
+      tags: [authorization]
+      summary: Begin revocation passkey confirmation
+      security: []
+      requestBody: {$ref: "#/components/requestBodies/JsonObject"}
+      responses:
+        "200": {$ref: "#/components/responses/Ceremony"}
+        "400": {$ref: "#/components/responses/Error"}
+  /v1/device-revocations/passkey/finish:
+    post:
+      tags: [authorization]
+      summary: Finish revocation passkey confirmation
+      security: []
+      requestBody: {$ref: "#/components/requestBodies/JsonObject"}
+      responses:
+        "204": {description: Device revoked}
+        "400": {$ref: "#/components/responses/Error"}
+  /v1/device-revocations/email/start:
+    post:
+      tags: [authorization]
+      summary: Send a revocation confirmation link
+      security: []
+      requestBody: {$ref: "#/components/requestBodies/JsonObject"}
+      responses:
+        "204": {description: Link accepted for delivery}
+        "400": {$ref: "#/components/responses/Error"}
+  /v1/device-revocations/email/finish:
+    post:
+      tags: [authorization]
+      summary: Consume a revocation confirmation link
+      security: []
+      requestBody: {$ref: "#/components/requestBodies/JsonObject"}
+      responses:
+        "204": {description: Device revoked}
+        "400": {$ref: "#/components/responses/Error"}
+  /v1/me:
+    get:
+      tags: [account]
+      summary: Read current profile
+      responses:
+        "200":
+          description: Profile
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Profile"}
+        "401": {$ref: "#/components/responses/Error"}
+    patch:
+      tags: [account]
+      summary: Update current profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ProfilePatch"}
+      responses:
+        "200":
+          description: Updated profile
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Profile"}
+        "400": {$ref: "#/components/responses/Error"}
+  /v1/users/{handle}/key-packages/claim:
+    parameters:
+      - name: handle
+        in: path
+        required: true
+        schema: {type: string}
+    post:
+      tags: [mailbox]
+      summary: Atomically claim fresh peer key packages
+      responses:
+        "200":
+          description: At most one unused package per active peer device
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: "#/components/schemas/KeyPackageRecord"}
+        "409": {$ref: "#/components/responses/Error"}
+  /v1/key-packages:
+    post:
+      tags: [mailbox]
+      summary: Publish fresh key packages for the current device
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/KeyPackagePublish"}
+      responses:
+        "204": {description: Packages published}
+        "400": {$ref: "#/components/responses/Error"}
+  /v1/account-device-key-packages/claim:
+    post:
+      tags: [mailbox]
+      summary: Claim target-bound same-account key packages
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/AccountDeviceKeyPackageClaim"}
+      responses:
+        "200":
+          description: Claimed packages
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: "#/components/schemas/KeyPackageRecord"}
+        "409": {$ref: "#/components/responses/Error"}
+  /v1/account-device-events:
+    get:
+      tags: [mailbox]
+      summary: Fetch durable account-device events
+      responses:
+        "200":
+          description: Pending events
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AccountDeviceEventBatch"}
+  /v1/account-device-events/ack:
+    post:
+      tags: [mailbox]
+      summary: Acknowledge durable account-device events
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/AccountDeviceEventAck"}
+      responses:
+        "204": {description: Events acknowledged}
+  /v1/conversation-mutations:
+    post:
+      tags: [mailbox]
+      summary: Acquire a conversation membership mutation lease
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ConversationMutationStart"}
+      responses:
+        "200":
+          description: Exclusive lease
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ConversationMutationAuthorization"}
+        "409": {$ref: "#/components/responses/Error"}
+  /v1/conversation-mutations/release:
+    post:
+      tags: [mailbox]
+      summary: Release an unused conversation mutation lease
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ConversationMutationRelease"}
+      responses:
+        "204": {description: Lease released}
+  /v1/messages:
+    get:
+      tags: [mailbox]
+      summary: Fetch pending ciphertext mailbox deliveries
+      responses:
+        "200":
+          description: Pending deliveries
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/MessageBatch"}
+    post:
+      tags: [mailbox]
+      summary: Store and route an opaque MLS envelope
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CiphertextEnvelope"}
+      responses:
+        "202": {description: Envelope durably accepted}
+        "400": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/QuotaExceeded"}
+  /v1/messages/ack:
+    post:
+      tags: [mailbox]
+      summary: Acknowledge mailbox deliveries
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/MessageAck"}
+      responses:
+        "204": {description: Deliveries acknowledged}
+  /v1/events:
+    get:
+      tags: [mailbox]
+      summary: Open authenticated mailbox-ready WebSocket
+      responses:
+        "101":
+          description: 'WebSocket upgrade; events contain only {"type":"mailbox_ready"}'
+        "401": {$ref: "#/components/responses/Error"}
+        "429": {$ref: "#/components/responses/RateLimited"}
+  /v1/attachments:
+    post:
+      tags: [attachments]
+      summary: Reserve an opaque encrypted attachment
+      description: >-
+        Send `X-Mutte-Attachment-Storage: object` to receive a short-lived,
+        size-bound presigned R2 PUT request. Omitting the header selects the
+        deprecated inline-chunk compatibility transport.
+      parameters:
+        - name: X-Mutte-Attachment-Storage
+          in: header
+          required: false
+          schema: {type: string, enum: [object]}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/AttachmentStart"}
+      responses:
+        "200":
+          description: Upload status
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AttachmentStatus"}
+        "400": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/QuotaExceeded"}
+  /v1/attachments/{attachment_id}:
+    parameters:
+      - {$ref: "#/components/parameters/AttachmentId"}
+    delete:
+      tags: [attachments]
+      summary: Delete an owner-controlled opaque attachment
+      responses:
+        "204": {description: Deleted or already absent}
+  /v1/attachments/{attachment_id}/object:
+    parameters:
+      - {$ref: "#/components/parameters/AttachmentId"}
+    get:
+      tags: [attachments]
+      summary: Authorize a direct download of a completed opaque R2 object
+      responses:
+        "200":
+          description: Short-lived presigned GET request
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AttachmentObjectDownload"}
+        "400": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Error"}
+  /v1/attachments/{attachment_id}/chunks:
+    parameters:
+      - {$ref: "#/components/parameters/AttachmentId"}
+    post:
+      tags: [attachments]
+      summary: Upload one alpha-compatibility ciphertext chunk
+      deprecated: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/AttachmentChunkUpload"}
+      responses:
+        "204": {description: Chunk stored or identical retry accepted}
+        "400": {$ref: "#/components/responses/Error"}
+  /v1/attachments/{attachment_id}/chunks/{chunk_index}:
+    parameters:
+      - {$ref: "#/components/parameters/AttachmentId"}
+      - name: chunk_index
+        in: path
+        required: true
+        schema: {type: integer, minimum: 0}
+    get:
+      tags: [attachments]
+      summary: Download one alpha-compatibility ciphertext chunk
+      deprecated: true
+      responses:
+        "200":
+          description: Opaque chunk
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AttachmentChunkData"}
+        "400": {$ref: "#/components/responses/Error"}
+  /v1/attachments/{attachment_id}/complete:
+    parameters:
+      - {$ref: "#/components/parameters/AttachmentId"}
+    post:
+      tags: [attachments]
+      summary: Validate and complete an opaque attachment
+      responses:
+        "204": {description: Attachment complete}
+        "400": {$ref: "#/components/responses/Error"}
+  /v1/attachments/{attachment_id}/recipients:
+    parameters:
+      - {$ref: "#/components/parameters/AttachmentId"}
+    post:
+      tags: [attachments]
+      summary: Grant access to an active same-account device
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/AttachmentRecipientGrant"}
+      responses:
+        "204": {description: Recipient granted}
+        "400": {$ref: "#/components/responses/Error"}
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+    deviceSecret:
+      type: apiKey
+      in: header
+      name: X-Mutte-Device-Secret
+  parameters:
+    DeviceId:
+      name: device_id
+      in: path
+      required: true
+      schema: {$ref: "#/components/schemas/Uuid"}
+    RequestId:
+      name: request_id
+      in: path
+      required: true
+      schema: {$ref: "#/components/schemas/Uuid"}
+    AttachmentId:
+      name: attachment_id
+      in: path
+      required: true
+      schema: {$ref: "#/components/schemas/Uuid"}
+  requestBodies:
+    JsonObject:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: true
+  responses:
+    Error:
+      description: Safe error envelope
+      headers:
+        X-Request-Id:
+          schema: {$ref: "#/components/schemas/Uuid"}
+        X-Mutte-Protocol:
+          schema: {type: string, const: mutte/0.8-alpha}
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/ApiError"}
+    RateLimited:
+      description: Rate or connection limit exceeded; code is `rate_limited`
+      headers:
+        Retry-After:
+          required: true
+          schema: {type: integer, minimum: 1}
+        X-Request-Id:
+          schema: {$ref: "#/components/schemas/Uuid"}
+        X-Mutte-Protocol:
+          schema: {type: string, const: mutte/0.8-alpha}
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/ApiError"}
+    QuotaExceeded:
+      description: Durable account, mailbox, or device quota exceeded; code is `quota_exceeded`
+      headers:
+        X-Request-Id:
+          schema: {$ref: "#/components/schemas/Uuid"}
+        X-Mutte-Protocol:
+          schema: {type: string, const: mutte/0.8-alpha}
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/ApiError"}
+    Ceremony:
+      description: Server-bound, single-use WebAuthn ceremony
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [ceremony, challenge]
+            properties:
+              ceremony: {type: string}
+              challenge: {type: object, additionalProperties: true}
+  schemas:
+    Uuid: {type: string, format: uuid}
+    DateTime: {type: string, format: date-time}
+    Health:
+      type: object
+      required: [status, protocol]
+      properties:
+        status: {type: string}
+        protocol: {type: string, const: mutte/0.8-alpha}
+    ApiError:
+      type: object
+      required: [code, error, request_id]
+      properties:
+        code:
+          type: string
+          pattern: "^[a-z][a-z0-9_]*$"
+          x-mutte-known-values: [bad_request, conflict, internal_error, passkey_verification_failed, quota_exceeded, rate_limited, service_unavailable, unauthorized]
+          description: >-
+            Stable machine code. Clients must treat an unknown future code as
+            `internal_error` rather than failing to decode the envelope.
+        error: {type: string}
+        request_id: {$ref: "#/components/schemas/Uuid"}
+    DeviceStart:
+      type: object
+      additionalProperties: false
+      required: [device_id, device_name, key_package]
+      properties:
+        device_id: {$ref: "#/components/schemas/Uuid"}
+        device_name: {type: string, minLength: 1, maxLength: 80}
+        key_package: {type: string, contentEncoding: base64url, minLength: 32, maxLength: 65536}
+    DeviceAuthorization:
+      type: object
+      required: [device_id, device_secret, verification_url, expires_at]
+      properties:
+        device_id: {$ref: "#/components/schemas/Uuid"}
+        device_secret: {type: string, writeOnly: true}
+        verification_url: {type: string, format: uri}
+        expires_at: {$ref: "#/components/schemas/DateTime"}
+    DeviceStatus:
+      type: object
+      required: [state]
+      properties:
+        state: {type: string, enum: [pending, approved, expired]}
+        access_token: {type: string, writeOnly: true}
+        profile: {$ref: "#/components/schemas/Profile"}
+    Profile:
+      type: object
+      required: [id, handle, display_name, bio, status]
+      properties:
+        id: {$ref: "#/components/schemas/Uuid"}
+        handle: {type: string}
+        display_name: {type: string}
+        bio: {type: string}
+        status: {type: string}
+    ProfilePatch:
+      type: object
+      additionalProperties: false
+      properties:
+        bio: {type: string, maxLength: 160}
+        status: {type: string, maxLength: 12}
+    DeviceList:
+      type: object
+      required: [devices]
+      properties:
+        devices:
+          type: array
+          items:
+            type: object
+            required: [device_id, device_name, state, current, created_at]
+            properties:
+              device_id: {$ref: "#/components/schemas/Uuid"}
+              device_name: {type: string}
+              state: {type: string, enum: [active, revoked]}
+              current: {type: boolean}
+              created_at: {$ref: "#/components/schemas/DateTime"}
+    PushRegistrationUpsert:
+      type: object
+      additionalProperties: false
+      required: [installation_id, provider, environment, token]
+      properties:
+        installation_id: {$ref: "#/components/schemas/Uuid"}
+        provider: {type: string, enum: [apns]}
+        environment: {type: string, enum: [development, production]}
+        token: {type: string, minLength: 64, maxLength: 64, pattern: "^[0-9A-Fa-f]{64}$", writeOnly: true}
+    DeviceRevocationStart:
+      type: object
+      additionalProperties: false
+      required: [target_device_id]
+      properties:
+        target_device_id: {$ref: "#/components/schemas/Uuid"}
+    DeviceRevocationAuthorization:
+      type: object
+      required: [request_id, target_device_id, confirmation_url, expires_at]
+      properties:
+        request_id: {$ref: "#/components/schemas/Uuid"}
+        target_device_id: {$ref: "#/components/schemas/Uuid"}
+        confirmation_url: {type: string, format: uri}
+        expires_at: {$ref: "#/components/schemas/DateTime"}
+    DeviceRevocationStatus:
+      type: object
+      required: [state, target_device_id]
+      properties:
+        state: {type: string, enum: [pending, approved, expired]}
+        target_device_id: {$ref: "#/components/schemas/Uuid"}
+    KeyPackageRecord:
+      type: object
+      required: [device_id, device_name, key_package, created_at]
+      properties:
+        device_id: {$ref: "#/components/schemas/Uuid"}
+        device_name: {type: string}
+        key_package: {type: string, contentEncoding: base64url}
+        created_at: {$ref: "#/components/schemas/DateTime"}
+    KeyPackagePublish:
+      type: object
+      additionalProperties: false
+      required: [key_packages]
+      properties:
+        key_packages:
+          type: array
+          minItems: 1
+          maxItems: 64
+          items: {type: string, contentEncoding: base64url, minLength: 32, maxLength: 65536}
+    AccountDeviceKeyPackageClaim:
+      type: object
+      additionalProperties: false
+      required: [target_device_id, count]
+      properties:
+        target_device_id: {$ref: "#/components/schemas/Uuid"}
+        count: {type: integer, minimum: 1, maximum: 64}
+    AccountDeviceEvent:
+      type: object
+      required: [delivery_id, event_id, kind, target_device_id, created_at]
+      properties:
+        delivery_id: {type: integer, format: int64, minimum: 1}
+        event_id: {$ref: "#/components/schemas/Uuid"}
+        kind: {type: string, enum: [added, revoked]}
+        target_device_id: {$ref: "#/components/schemas/Uuid"}
+        created_at: {$ref: "#/components/schemas/DateTime"}
+    AccountDeviceEventBatch:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          items: {$ref: "#/components/schemas/AccountDeviceEvent"}
+    AccountDeviceEventAck:
+      type: object
+      additionalProperties: false
+      required: [delivery_ids]
+      properties:
+        delivery_ids:
+          type: array
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+          items: {type: integer, format: int64, minimum: 1}
+    ConversationMutationStart:
+      type: object
+      additionalProperties: false
+      required: [conversation_id]
+      properties:
+        conversation_id: {$ref: "#/components/schemas/Uuid"}
+    ConversationMutationAuthorization:
+      type: object
+      required: [conversation_id, mutation_id]
+      properties:
+        conversation_id: {$ref: "#/components/schemas/Uuid"}
+        mutation_id: {$ref: "#/components/schemas/Uuid"}
+    ConversationMutationRelease:
+      type: object
+      additionalProperties: false
+      required: [conversation_id, mutation_id]
+      properties:
+        conversation_id: {$ref: "#/components/schemas/Uuid"}
+        mutation_id: {$ref: "#/components/schemas/Uuid"}
+    CiphertextEnvelope:
+      type: object
+      additionalProperties: false
+      required: [id, conversation_id, sender_device_id, sender_handle, recipients, kind, ciphertext, created_at]
+      properties:
+        id: {$ref: "#/components/schemas/Uuid"}
+        conversation_id: {$ref: "#/components/schemas/Uuid"}
+        sender_device_id: {$ref: "#/components/schemas/Uuid"}
+        sender_handle: {type: string}
+        recipients: {type: array, minItems: 1, maxItems: 64, items: {$ref: "#/components/schemas/Uuid"}}
+        kind: {type: string, enum: [welcome, application, commit, device_sync, history_sync]}
+        mutation_id: {$ref: "#/components/schemas/Uuid"}
+        ciphertext: {type: string, contentEncoding: base64url, maxLength: 1048576}
+        created_at: {$ref: "#/components/schemas/DateTime"}
+    MessageBatch:
+      type: object
+      required: [messages]
+      properties:
+        messages:
+          type: array
+          items:
+            type: object
+            required: [delivery_id, envelope]
+            properties:
+              delivery_id: {type: integer, format: int64}
+              envelope: {$ref: "#/components/schemas/CiphertextEnvelope"}
+    MessageAck:
+      type: object
+      additionalProperties: false
+      required: [delivery_ids]
+      properties:
+        delivery_ids: {type: array, minItems: 1, maxItems: 100, items: {type: integer, format: int64, minimum: 1}}
+    AttachmentStart:
+      type: object
+      additionalProperties: false
+      required: [attachment_id, recipients, chunk_count, ciphertext_size]
+      properties:
+        attachment_id: {$ref: "#/components/schemas/Uuid"}
+        recipients: {type: array, minItems: 1, maxItems: 64, items: {$ref: "#/components/schemas/Uuid"}}
+        chunk_count: {type: integer, minimum: 0, maximum: 128}
+        ciphertext_size: {type: integer, minimum: 0, maximum: 33559552}
+    AttachmentStatus:
+      type: object
+      required: [attachment_id, uploaded_chunks, complete]
+      properties:
+        attachment_id: {$ref: "#/components/schemas/Uuid"}
+        uploaded_chunks: {type: array, items: {type: integer, minimum: 0}}
+        complete: {type: boolean}
+        upload: {$ref: "#/components/schemas/PresignedObjectRequest"}
+    PresignedObjectRequest:
+      type: object
+      required: [method, url, headers, expires_at]
+      properties:
+        method: {type: string, enum: [GET, PUT]}
+        url: {type: string, format: uri, writeOnly: true}
+        headers:
+          type: object
+          additionalProperties: {type: string}
+        expires_at: {$ref: "#/components/schemas/DateTime"}
+    AttachmentObjectDownload:
+      type: object
+      required: [attachment_id, download]
+      properties:
+        attachment_id: {$ref: "#/components/schemas/Uuid"}
+        download: {$ref: "#/components/schemas/PresignedObjectRequest"}
+    AttachmentChunkUpload:
+      type: object
+      additionalProperties: false
+      required: [chunk_index, ciphertext]
+      properties:
+        chunk_index: {type: integer, minimum: 0, maximum: 127}
+        ciphertext: {type: string, contentEncoding: base64url}
+    AttachmentChunkData:
+      type: object
+      required: [attachment_id, chunk_index, ciphertext]
+      properties:
+        attachment_id: {$ref: "#/components/schemas/Uuid"}
+        chunk_index: {type: integer, minimum: 0}
+        ciphertext: {type: string, contentEncoding: base64url}
+    AttachmentRecipientGrant:
+      type: object
+      additionalProperties: false
+      required: [target_device_id]
+      properties:
+        target_device_id: {$ref: "#/components/schemas/Uuid"}

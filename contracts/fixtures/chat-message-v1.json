@@ -1,0 +1,18 @@
+{
+  "type": "message",
+  "version": 1,
+  "id": "00000000-0000-4000-8000-000000000010",
+  "text": "Encrypted hello",
+  "sent_at": "2026-08-27T12:00:00Z",
+  "attachment": {
+    "version": 1,
+    "attachment_id": "00000000-0000-4000-8000-000000000011",
+    "filename": "notes.txt",
+    "plaintext_size": 14,
+    "chunk_count": 1,
+    "file_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "plaintext_hash": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+  },
+  "reply_to": "00000000-0000-4000-8000-000000000012",
+  "thread_root": "00000000-0000-4000-8000-000000000012"
+}

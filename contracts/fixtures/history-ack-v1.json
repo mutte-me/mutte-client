@@ -1,0 +1,8 @@
+{
+  "type": "ack",
+  "version": 1,
+  "transfer_id": "00000000-0000-4000-8000-000000000040",
+  "source_device_id": "00000000-0000-4000-8000-000000000041",
+  "transcript_hash": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+  "imported_count": 1
+}

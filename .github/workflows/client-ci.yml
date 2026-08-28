@@ -1,0 +1,54 @@
+name: Client CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: client-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64
+            runner: ubuntu-22.04
+          - name: Linux ARM64
+            runner: ubuntu-22.04-arm
+          - name: macOS Apple Silicon
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Linux native dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes libdbus-1-dev pkg-config
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.98.0 --profile minimal --component rustfmt,clippy
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: client-${{ matrix.runner }}-${{ hashFiles('Cargo.lock') }}
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Test client workspace
+        run: cargo test --locked --workspace
+      - name: Lint client workspace
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Build release binary
+        run: cargo build --locked --release --package mutte
+      - name: Check CLI
+        run: target/release/mutte --version

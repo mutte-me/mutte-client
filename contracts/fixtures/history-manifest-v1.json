@@ -1,0 +1,9 @@
+{
+  "type": "manifest",
+  "version": 1,
+  "transfer_id": "00000000-0000-4000-8000-000000000040",
+  "target_device_id": "00000000-0000-4000-8000-000000000042",
+  "message_count": 1,
+  "chunk_count": 1,
+  "transcript_hash": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+}

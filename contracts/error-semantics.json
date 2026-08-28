@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "protocol": "mutte/0.8-alpha",
+  "unknown_code_behavior": "treat_as_internal_error",
+  "human_message_is_stable": false,
+  "envelope": {
+    "required_fields": ["code", "error", "request_id"],
+    "request_id_header": "X-Request-Id",
+    "protocol_header": "X-Mutte-Protocol"
+  },
+  "codes": [
+    {
+      "code": "bad_request",
+      "http_status": 400,
+      "retry": "only_after_changing_the_request",
+      "retry_after_required": false
+    },
+    {
+      "code": "conflict",
+      "http_status": 409,
+      "retry": "only_after_resolving_the_conflict",
+      "retry_after_required": false
+    },
+    {
+      "code": "internal_error",
+      "http_status": 500,
+      "retry": "idempotent_operations_only_with_backoff",
+      "retry_after_required": false
+    },
+    {
+      "code": "passkey_verification_failed",
+      "http_status": 400,
+      "retry": "restart_the_passkey_ceremony",
+      "retry_after_required": false
+    },
+    {
+      "code": "quota_exceeded",
+      "http_status": 409,
+      "retry": "only_after_freeing_capacity",
+      "retry_after_required": false
+    },
+    {
+      "code": "rate_limited",
+      "http_status": 429,
+      "retry": "after_retry_after_with_jitter",
+      "retry_after_required": true
+    },
+    {
+      "code": "service_unavailable",
+      "http_status": 503,
+      "retry": "idempotent_operations_only_with_backoff",
+      "retry_after_required": false
+    },
+    {
+      "code": "unauthorized",
+      "http_status": 401,
+      "retry": "reauthorize_before_retrying",
+      "retry_after_required": false
+    }
+  ]
+}

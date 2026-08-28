@@ -1,0 +1,18 @@
+{
+  "type": "chunk",
+  "version": 1,
+  "transfer_id": "00000000-0000-4000-8000-000000000040",
+  "target_device_id": "00000000-0000-4000-8000-000000000042",
+  "chunk_index": 0,
+  "chunk_count": 1,
+  "chunk_hash": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+  "messages": [
+    {
+      "id": "00000000-0000-4000-8000-000000000010",
+      "text": "Encrypted hello",
+      "mine": true,
+      "sent_at": "2026-08-27T12:00:00Z",
+      "receipt": "delivered"
+    }
+  ]
+}

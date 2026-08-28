@@ -1,0 +1,26 @@
+[package]
+name = "mutte-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+chacha20poly1305.workspace = true
+chrono.workspace = true
+directories.workspace = true
+openmls.workspace = true
+openmls_basic_credential.workspace = true
+openmls_libcrux_crypto.workspace = true
+openmls_traits.workspace = true
+rand.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tls_codec = { version = "0.5.0", features = ["derive", "serde", "std"] }
+uuid.workspace = true
+zeroize.workspace = true
