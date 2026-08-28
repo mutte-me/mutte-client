@@ -20,7 +20,7 @@ curl -sfL https://raw.githubusercontent.com/yuramelesh/mutte-client/main/scripts
 The installer detects Linux or macOS and the native CPU architecture, downloads
 the newest published archive, verifies its SHA-256 checksum, and installs
 `mutte` into `~/.local/bin`. It does not require Rust or `cargo`. Re-run the same
-command to upgrade. Set `MUTTE_VERSION=v0.1.0-alpha.3` to pin a release or
+command to upgrade. Set `MUTTE_VERSION=v0.1.0-alpha.2` to pin a release or
 `MUTTE_INSTALL_DIR=/another/bin` to choose the destination.
 
 To inspect the installer before running it:

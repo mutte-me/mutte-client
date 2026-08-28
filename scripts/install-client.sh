@@ -29,7 +29,7 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-for command_name in curl grep id install mkdir mktemp mv sed tar uname; do
+for command_name in curl grep id install mkdir mktemp mv tar uname; do
   need_command "$command_name"
 done
 
@@ -48,21 +48,16 @@ esac
 platform="$operating_system-$architecture"
 
 if [ -z "$version" ]; then
-  releases_url="https://api.github.com/repos/$repository/releases?per_page=1"
-  release_json="$(curl \
+  channel_url="https://raw.githubusercontent.com/$repository/main/INSTALL_VERSION"
+  version="$(curl \
     --fail \
     --silent \
     --show-error \
     --location \
     --proto '=https' \
     --tlsv1.2 \
-    -H 'Accept: application/vnd.github+json' \
-    -H 'X-GitHub-Api-Version: 2022-11-28' \
-    "$releases_url")" || fail \
-      "could not resolve the newest release; set MUTTE_VERSION explicitly"
-  version="$(printf '%s\n' "$release_json" | sed -n \
-    's/^[[:space:]]*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | \
-    sed -n '1p')"
+    "$channel_url")" || fail \
+      "could not resolve the install channel; set MUTTE_VERSION explicitly"
 fi
 
 printf '%s\n' "$version" | grep -Eq \
