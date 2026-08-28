@@ -51,4 +51,5 @@ contracts. It intentionally excludes relay implementation and deployment code.
 
 Mutte is licensed under [AGPL-3.0-only](LICENSE). Security limitations and the
 current protocol freeze are documented in
-[`contracts/COMPATIBILITY.md`](contracts/COMPATIBILITY.md).
+[`contracts/COMPATIBILITY.md`](contracts/COMPATIBILITY.md). Report suspected
+vulnerabilities privately according to [`SECURITY.md`](SECURITY.md).
