@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/mutte-wordmark.svg" alt="Mutte" width="780">
+</p>
+
 # Mutte terminal client
 
 Quiet, encrypted, terminal-first chat for Linux and macOS, with optional native
@@ -14,19 +18,25 @@ credentials are not published here.
 ## Install
 
 ```bash
-curl -sfL https://raw.githubusercontent.com/mutte-me/mutte-client/main/scripts/install-client.sh | sh -
+curl -sfL https://get.mutte.me | sh -
 ```
 
 The installer detects Linux or macOS and the native CPU architecture, downloads
 the newest published archive, verifies its SHA-256 checksum, and installs
 `mutte` into `~/.local/bin`. It does not require Rust or `cargo`. Re-run the same
-command to upgrade. Set `MUTTE_VERSION=v0.1.0-alpha.3` to pin a release or
+command to upgrade. Set `MUTTE_VERSION=v0.1.0-alpha.4` to pin a release or
 `MUTTE_INSTALL_DIR=/another/bin` to choose the destination.
+
+With Homebrew:
+
+```bash
+brew install mutte-me/tap/mutte
+```
 
 To inspect the installer before running it:
 
 ```bash
-curl -sfL https://raw.githubusercontent.com/mutte-me/mutte-client/main/scripts/install-client.sh -o install-mutte.sh
+curl -sfL https://get.mutte.me -o install-mutte.sh
 less install-mutte.sh
 sh install-mutte.sh
 ```
