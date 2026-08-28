@@ -12,6 +12,10 @@ permissions:
 jobs:
   build:
     name: ${{ matrix.platform }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -42,6 +46,78 @@ jobs:
           key: client-release-${{ matrix.runner }}-${{ hashFiles('Cargo.lock') }}
       - name: Build release binary
         run: cargo build --locked --release --package mutte
+      - name: Sign and notarize macOS binary
+        if: runner.os == 'macOS' && github.ref_type == 'tag'
+        env:
+          APPLE_DEVELOPER_ID_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
+          APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          for name in \
+            APPLE_DEVELOPER_ID_P12_BASE64 \
+            APPLE_DEVELOPER_ID_P12_PASSWORD \
+            APPLE_SIGNING_IDENTITY \
+            APPLE_NOTARY_KEY_P8_BASE64 \
+            APPLE_NOTARY_KEY_ID \
+            APPLE_NOTARY_ISSUER_ID; do
+            if [ -z "${!name:-}" ]; then
+              echo "Missing required macOS release secret: $name" >&2
+              exit 1
+            fi
+          done
+
+          certificate_path="$RUNNER_TEMP/developer-id.p12"
+          notary_key_path="$RUNNER_TEMP/notary-key.p8"
+          keychain_path="$RUNNER_TEMP/mutte-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 32)"
+          notarization_archive="$RUNNER_TEMP/mutte-notarization.zip"
+
+          printf '%s' "$APPLE_DEVELOPER_ID_P12_BASE64" | \
+            openssl base64 -d -A > "$certificate_path"
+          printf '%s' "$APPLE_NOTARY_KEY_P8_BASE64" | \
+            openssl base64 -d -A > "$notary_key_path"
+
+          cleanup_signing_keychain() {
+            security delete-keychain "$keychain_path" >/dev/null 2>&1 || true
+          }
+          trap cleanup_signing_keychain EXIT
+
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$certificate_path" \
+            -k "$keychain_path" \
+            -P "$APPLE_DEVELOPER_ID_P12_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$keychain_password" \
+            "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+          security find-identity -v -p codesigning "$keychain_path" | \
+            grep -F "$APPLE_SIGNING_IDENTITY"
+
+          codesign \
+            --force \
+            --identifier me.mutte.terminal \
+            --options runtime \
+            --timestamp \
+            --sign "$APPLE_SIGNING_IDENTITY" \
+            target/release/mutte
+          codesign --verify --strict --verbose=2 target/release/mutte
+
+          ditto -c -k --keepParent \
+            target/release/mutte \
+            "$notarization_archive"
+          xcrun notarytool submit "$notarization_archive" \
+            --key "$notary_key_path" \
+            --key-id "$APPLE_NOTARY_KEY_ID" \
+            --issuer "$APPLE_NOTARY_ISSUER_ID" \
+            --wait
       - name: Package binary and checksum
         env:
           PLATFORM: ${{ matrix.platform }}
@@ -52,6 +128,11 @@ jobs:
             version="0.1.0-alpha.1-${GITHUB_SHA::12}"
           fi
           ./scripts/package-client.sh "$version" "$PLATFORM"
+      - name: Attest release provenance
+        if: github.ref_type == 'tag'
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*.tar.gz
       - uses: actions/upload-artifact@v7
         with:
           name: mutte-${{ matrix.platform }}
