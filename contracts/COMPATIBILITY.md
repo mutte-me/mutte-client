@@ -75,3 +75,25 @@ mechanically.
 
 WebSocket and push messages remain hints. A reconnect always reads the
 authenticated mailbox and account-device event feeds as the source of truth.
+
+## Profile editing additive extension (2026-09-08)
+
+`GET /v1/me` and `PATCH /v1/me` now return the existing flat profile plus optional
+`avatar_jpeg`. Legacy clients ignore this extra response field. The patch adds
+optional `display_name` and `avatar_jpeg`; omitted fields preserve current values,
+an empty avatar string removes the photo, and JSON null behaves like omission.
+Names are trimmed and validated before the atomic update. Photos are bounded JPEGs
+and are re-encoded without source metadata. The photo is relay-readable account
+metadata, not message ciphertext. There is no new public profile directory.
+
+Migration 0004 adds one nullable column with a size constraint; prior queries
+continue using explicit column lists. Existing migrations remain unchanged. Before
+applying 0004, deploy a preparatory relay from the three-migration baseline with
+`Migrator::set_ignore_missing(true)` and validate it. That binary is the rollback
+target. The currently deployed strict migrator would reject unknown migration 4
+on restart; schema compatibility alone does not make that old image rollback-safe.
+The new migrator still validates checksums for all migrations it knows.
+Native editing detects old relays that ignore the new fields and does not report
+success. Deploy the migration/relay before distributing the editing client.
+The authenticated integration test exercises preservation, removal, cross-device
+reads, rejection atomicity, authorization, and legacy `Profile` decoding.

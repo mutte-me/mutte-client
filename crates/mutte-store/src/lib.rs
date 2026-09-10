@@ -5,9 +5,12 @@
 //! transport or TUI code.
 
 pub mod attachment;
+mod attention;
+mod personal;
+pub use attention::{ConversationPreferences, NotificationMode};
 
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     fs,
     io::{self, Write},
     path::{Path, PathBuf},
@@ -37,8 +40,12 @@ use zeroize::Zeroizing;
 
 const KEY_META_FORMAT: &str = "mutte-vault-key/v1";
 const LEGACY_KEY_META_FORMAT: &str = "omt-vault-key/v1";
-const VAULT_FORMAT: &str = "mutte-vault/v1";
-const VAULT_AAD: &[u8] = b"mutte-vault/v1";
+// Older binaries must not read then silently discard recipient preferences.
+// The envelope version also authenticates the migration boundary via its AAD.
+const VAULT_FORMAT: &str = "mutte-vault/v2";
+const VAULT_AAD: &[u8] = b"mutte-vault/v2";
+const PRE_ATTENTION_VAULT_FORMAT: &str = "mutte-vault/v1";
+const PRE_ATTENTION_VAULT_AAD: &[u8] = b"mutte-vault/v1";
 const LEGACY_VAULT_FORMAT: &str = "omt-vault/v1";
 const LEGACY_VAULT_AAD: &[u8] = b"omt-vault/v1";
 const KEYRING_SERVICE: &str = "chat.mutte.vault";
@@ -57,6 +64,46 @@ const MAX_HISTORY_CHUNK_BYTES: usize = 256 * 1024;
 const MAX_HISTORY_CHUNKS: usize = 1_024;
 const MAX_COMPLETED_HISTORY_TRANSFERS: usize = 128;
 const VAULT_DATA_VERSION: u16 = 2;
+const RELAY_VAULT_LAYOUT: &str = "messaging-v2";
+const RELAY_ORIGIN_DIRECTORY: &str = "relay-origins";
+const ACTIVE_ACCOUNT_FORMAT: &str = "mutte-active-account/v1";
+/// Internal marker used until an authenticated device-sync payload supplies
+/// the real peer handle for a conversation welcomed by another own device.
+pub const UNRESOLVED_PEER_HANDLE: &str = "encrypted-peer";
+
+/// Canonical HTTP(S) origin used to isolate relay-owned local state.
+///
+/// Paths, queries, fragments, host casing, and explicit default ports do not
+/// create a second scope. The relay transport may retain a base path, but
+/// account credentials and encrypted message state belong to its web origin.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RelayOrigin(String);
+
+impl RelayOrigin {
+    pub fn from_url(url: &Url) -> Result<Self> {
+        if !matches!(url.scheme(), "http" | "https")
+            || !url.origin().is_tuple()
+            || !url.username().is_empty()
+            || url.password().is_some()
+        {
+            bail!("relay URL must have an HTTP(S) origin")
+        }
+        Ok(Self(url.origin().ascii_serialization()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    fn directory_name(&self) -> String {
+        URL_SAFE_NO_PAD.encode(Sha256::digest(self.0.as_bytes()))
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+struct ActiveAccount {
+    account_id: Uuid,
+}
 
 pub struct VaultKey {
     secret: SecretBox<[u8; 32]>,
@@ -255,6 +302,7 @@ struct VaultData {
     outbound_attachments: Vec<OutboundAttachment>,
     pending_receipts: Vec<PendingReceipt>,
     settings: VaultSettings,
+    conversation_preferences: BTreeMap<Uuid, ConversationPreferences>,
 }
 
 #[derive(Deserialize)]
@@ -492,6 +540,10 @@ pub struct OutboundAttachment {
     pub metadata: AttachmentMetadata,
     pub recipients: Vec<Uuid>,
     pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub reply_to: Option<Uuid>,
+    #[serde(default)]
+    pub thread_root: Option<Uuid>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -506,6 +558,73 @@ struct EncryptedVault {
     format: String,
     nonce: String,
     ciphertext: String,
+}
+
+/// Returns the encrypted message-vault path for one relay origin, device, and
+/// account. A full SHA-256 origin digest keeps untrusted host text out of path
+/// components while retaining deterministic separation.
+pub fn relay_account_device_vault_path(
+    storage_directory: &Path,
+    server: &Url,
+    account_id: Uuid,
+    device_id: Uuid,
+) -> Result<PathBuf> {
+    Ok(
+        relay_device_directory(storage_directory, server, device_id)?
+            .join("accounts")
+            .join(account_id.to_string())
+            .join("vault.json"),
+    )
+}
+
+/// Returns the encrypted MLS identity path for one relay origin.
+///
+/// Every origin, including production, uses the hashed relay layout. The
+/// released global `device.json` had no durable origin binding: an identity
+/// first exposed to a custom relay could otherwise be mistaken for a
+/// production identity during upgrade. Native clients therefore leave it
+/// unused. The terminal may copy it only when its encrypted legacy vault
+/// independently proves the exact origin and matching device UUID.
+pub fn relay_local_identity_path(storage_directory: &Path, server: &Url) -> Result<PathBuf> {
+    let origin = RelayOrigin::from_url(server)?;
+    Ok(storage_directory
+        .join(RELAY_VAULT_LAYOUT)
+        .join(RELAY_ORIGIN_DIRECTORY)
+        .join(origin.directory_name())
+        .join("identity")
+        .join("device.json"))
+}
+
+/// Terminal variant of [`relay_local_identity_path`] rooted in Mutte's config
+/// directory.
+pub fn terminal_local_identity_path(server: &Url) -> Result<PathBuf> {
+    relay_local_identity_path(&config_dir()?, server)
+}
+
+/// Released terminal identity path. Callers must not use this identity unless
+/// an encrypted vault session independently binds its device UUID to the exact
+/// requested relay origin.
+pub fn terminal_legacy_local_identity_path() -> Result<PathBuf> {
+    Ok(config_dir()?.join("device.json"))
+}
+
+fn relay_device_directory(
+    storage_directory: &Path,
+    server: &Url,
+    device_id: Uuid,
+) -> Result<PathBuf> {
+    let origin = RelayOrigin::from_url(server)?;
+    Ok(storage_directory
+        .join(RELAY_VAULT_LAYOUT)
+        .join(RELAY_ORIGIN_DIRECTORY)
+        .join(origin.directory_name())
+        .join("devices")
+        .join(device_id.to_string()))
+}
+
+fn active_account_aad(server: &Url, device_id: Uuid) -> Result<Vec<u8>> {
+    let origin = RelayOrigin::from_url(server)?;
+    Ok(format!("{ACTIVE_ACCOUNT_FORMAT}\0{}\0{device_id}", origin.as_str()).into_bytes())
 }
 
 impl Vault {
@@ -532,6 +651,65 @@ impl Vault {
         Ok(vault)
     }
 
+    /// Opens the terminal vault selected for this relay origin and local
+    /// device. The private locator contains only an account UUID; the
+    /// encrypted vault's own session binding is verified before any state is
+    /// returned to the caller.
+    pub fn load_active_terminal(
+        server: &Url,
+        device_id: Uuid,
+        key: &[u8; 32],
+    ) -> Result<Option<Self>> {
+        load_active_relay_vault_at(&config_dir()?, server, device_id, key)
+    }
+
+    /// Opens (or creates) the terminal's origin/account/device-scoped vault.
+    pub fn open_terminal_scoped(
+        server: &Url,
+        account_id: Uuid,
+        device_id: Uuid,
+        key: &[u8; 32],
+    ) -> Result<Self> {
+        Self::open_at(
+            relay_account_device_vault_path(&config_dir()?, server, account_id, device_id)?,
+            key,
+        )
+    }
+
+    /// Copies a released terminal's global vault into the new scoped layout,
+    /// but only when its encrypted session proves the requested relay origin,
+    /// account, and device binding. The old file remains as a rollback backup
+    /// and is never opened as live message state after migration.
+    pub fn migrate_legacy_terminal_if_bound(
+        &self,
+        server: &Url,
+        account_id: Uuid,
+        device_id: Uuid,
+    ) -> Result<Option<Self>> {
+        self.copy_to_relay_scope_if_bound_at(&config_dir()?, server, account_id, device_id)
+    }
+
+    /// Records which already-bound scoped vault should supply a terminal
+    /// session on its next launch. The locator is not trusted on read; both its
+    /// account UUID and the vault's encrypted session are checked.
+    pub fn activate_terminal_scope(
+        &self,
+        server: &Url,
+        account_id: Uuid,
+        device_id: Uuid,
+    ) -> Result<()> {
+        if !self.is_bound_to(server, account_id, device_id) {
+            bail!("cannot activate a vault with a different relay, account, or device binding")
+        }
+        set_active_relay_account_at(
+            &config_dir()?,
+            server,
+            device_id,
+            account_id,
+            self.key.expose_secret(),
+        )
+    }
+
     pub fn conversations(&self) -> &[VaultConversation] {
         &self.data.conversations
     }
@@ -550,6 +728,79 @@ impl Vault {
 
     pub fn set_read_receipts(&mut self, enabled: bool) -> Result<()> {
         self.commit(|data| data.settings.send_read_receipts = enabled)
+    }
+
+    pub fn conversation_preferences(&self, id: Uuid) -> Result<ConversationPreferences> {
+        if !self
+            .data
+            .conversations
+            .iter()
+            .any(|conversation| conversation.id == id)
+        {
+            bail!("conversation is not available on this device")
+        }
+        Ok(self
+            .data
+            .conversation_preferences
+            .get(&id)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    pub fn set_notification_mode(&mut self, id: Uuid, mode: NotificationMode) -> Result<()> {
+        self.update_conversation_preferences(id, |preferences| {
+            preferences.notification_mode = mode;
+            if mode != NotificationMode::Off {
+                preferences.quiet = false;
+            }
+        })
+    }
+
+    pub fn set_conversation_quiet(&mut self, id: Uuid, quiet: bool) -> Result<()> {
+        self.update_conversation_preferences(id, |preferences| {
+            preferences.quiet = quiet;
+            if quiet {
+                preferences.notification_mode = NotificationMode::Off;
+            }
+        })
+    }
+
+    /// Restore both independent attention values atomically, preserving follows.
+    pub fn restore_conversation_attention(
+        &mut self,
+        id: Uuid,
+        quiet: bool,
+        mode: NotificationMode,
+    ) -> Result<()> {
+        if quiet && mode != NotificationMode::Off {
+            bail!("Quiet requires notifications Off");
+        }
+        self.update_conversation_preferences(id, |preferences| {
+            preferences.quiet = quiet;
+            preferences.notification_mode = mode;
+        })
+    }
+
+    pub fn set_thread_followed(&mut self, id: Uuid, root: Uuid, followed: bool) -> Result<()> {
+        if root.is_nil() {
+            bail!("discussion id is invalid")
+        }
+        self.update_conversation_preferences(id, |preferences| {
+            if followed {
+                preferences.followed_threads.insert(root);
+            } else {
+                preferences.followed_threads.remove(&root);
+            }
+        })
+    }
+
+    fn update_conversation_preferences(
+        &mut self,
+        id: Uuid,
+        update: impl FnOnce(&mut ConversationPreferences),
+    ) -> Result<()> {
+        self.conversation_preferences(id)?;
+        self.commit(|data| update(data.conversation_preferences.entry(id).or_default()))
     }
 
     pub fn pending_receipt_batches(&self) -> Vec<ReceiptBatch> {
@@ -902,7 +1153,26 @@ impl Vault {
         conversation_id: Uuid,
         source_path: PathBuf,
         metadata: AttachmentMetadata,
+        recipients: Vec<Uuid>,
+    ) -> Result<Uuid> {
+        self.begin_attachment_upload_scoped(
+            conversation_id,
+            source_path,
+            metadata,
+            recipients,
+            None,
+            None,
+        )
+    }
+
+    pub fn begin_attachment_upload_scoped(
+        &mut self,
+        conversation_id: Uuid,
+        source_path: PathBuf,
+        metadata: AttachmentMetadata,
         mut recipients: Vec<Uuid>,
+        reply_to: Option<Uuid>,
+        thread_root: Option<Uuid>,
     ) -> Result<Uuid> {
         crate::attachment::validate_metadata(&metadata)?;
         if !self
@@ -912,6 +1182,24 @@ impl Vault {
             .any(|conversation| conversation.id == conversation_id)
         {
             bail!("cannot attach a file to an unknown conversation")
+        }
+        if reply_to.is_some_and(|id| {
+            !self
+                .data
+                .messages
+                .iter()
+                .any(|message| message.id == id && message.conversation_id == conversation_id)
+        }) {
+            bail!("attachment reply target is unavailable in this conversation")
+        }
+        if thread_root.is_some_and(|id| {
+            !self.data.messages.iter().any(|message| {
+                message.id == id
+                    && message.conversation_id == conversation_id
+                    && message.thread_root.is_none()
+            })
+        }) {
+            bail!("attachment thread root is unavailable in this conversation")
         }
         if recipients.is_empty() {
             bail!("attachment has no recipient devices")
@@ -944,6 +1232,8 @@ impl Vault {
             metadata,
             recipients,
             created_at: Utc::now(),
+            reply_to,
+            thread_root,
         };
         self.commit(|data| data.outbound_attachments.push(transfer))?;
         Ok(attachment_id)
@@ -1017,8 +1307,8 @@ impl Vault {
                     local_path: Some(transfer.source_path),
                     download_requested: false,
                 }),
-                reply_to: None,
-                thread_root: None,
+                reply_to: transfer.reply_to,
+                thread_root: transfer.thread_root,
                 locally_read: true,
             };
             data.messages.push(message.clone());
@@ -1029,6 +1319,48 @@ impl Vault {
             });
             data.outbound_attachments.remove(index);
             Ok(message)
+        })
+    }
+
+    /// Rebind cached downloads after an application container moves. Only a
+    /// file matching the encrypted metadata's size and hash may replace a stale
+    /// path. Missing/corrupt cache entries become explicitly downloadable again;
+    /// this never deletes files or schedules an unsolicited network download.
+    pub fn reconcile_download_cache(&mut self, directory: &Path) -> Result<()> {
+        let mut repairs = Vec::new();
+        for (index, message) in self.data.messages.iter().enumerate() {
+            let Some(attachment) = &message.attachment else {
+                continue;
+            };
+            let Some(old_path) = &attachment.local_path else {
+                continue;
+            };
+            let local_path = if old_path.is_file() {
+                Some(old_path.clone())
+            } else {
+                // A bad cache must not make the rest of the encrypted history
+                // inaccessible. A subsequent explicit retry reports integrity
+                // errors through the normal transfer error path.
+                crate::attachment::existing_download_at(directory, &attachment.metadata)
+                    .unwrap_or(None)
+            };
+            if local_path != attachment.local_path || attachment.download_requested {
+                repairs.push((index, local_path));
+            }
+        }
+        if repairs.is_empty() {
+            return Ok(());
+        }
+        self.commit_fallible(|data| {
+            for (index, local_path) in repairs {
+                let attachment = data.messages[index]
+                    .attachment
+                    .as_mut()
+                    .context("cached attachment disappeared")?;
+                attachment.local_path = local_path;
+                attachment.download_requested = false;
+            }
+            Ok(())
         })
     }
 
@@ -1172,6 +1504,7 @@ impl Vault {
                 .as_mut()
                 .context("message does not contain an attachment")?;
             attachment.local_path = Some(local_path);
+            attachment.download_requested = false;
             Ok(())
         })
     }
@@ -1266,11 +1599,11 @@ impl Vault {
     }
 
     pub fn load_session(&self, server: &Url) -> Option<StoredSession> {
-        let stored = self
-            .data
-            .session
-            .as_ref()
-            .filter(|item| &item.server == server)?;
+        let requested_origin = RelayOrigin::from_url(server).ok()?;
+        let stored = self.data.session.as_ref().filter(|item| {
+            RelayOrigin::from_url(&item.server)
+                .is_ok_and(|stored_origin| stored_origin == requested_origin)
+        })?;
         Some(StoredSession {
             access_token: stored.access_token.clone(),
             device_id: stored.device_id,
@@ -1279,6 +1612,7 @@ impl Vault {
     }
 
     pub fn save_session(&mut self, server: &Url, session: &StoredSession) -> Result<()> {
+        RelayOrigin::from_url(server)?;
         let stored = VaultSession {
             server: server.clone(),
             access_token: session.access_token.clone(),
@@ -1286,6 +1620,52 @@ impl Vault {
             profile: session.profile.clone(),
         };
         self.commit(|data| data.session = Some(stored))
+    }
+
+    /// Clears only the named local sign-in. It does not revoke a relay device,
+    /// delete an account or remove encrypted conversation history.
+    pub fn clear_session_for(&mut self, server: &Url, device_id: Uuid) -> Result<()> {
+        if self
+            .load_session(server)
+            .is_some_and(|session| session.device_id == device_id)
+        {
+            self.commit(|data| data.session = None)?;
+        }
+        Ok(())
+    }
+
+    fn is_bound_to(&self, server: &Url, account_id: Uuid, device_id: Uuid) -> bool {
+        self.load_session(server).is_some_and(|session| {
+            session.profile.id == account_id && session.device_id == device_id
+        })
+    }
+
+    fn copy_to_relay_scope_if_bound_at(
+        &self,
+        storage_directory: &Path,
+        server: &Url,
+        account_id: Uuid,
+        device_id: Uuid,
+    ) -> Result<Option<Self>> {
+        if !self.is_bound_to(server, account_id, device_id) {
+            return Ok(None);
+        }
+        let target =
+            relay_account_device_vault_path(storage_directory, server, account_id, device_id)?;
+        if target.exists() {
+            let existing = Self::open_at(target, self.key.expose_secret())?;
+            if !existing.is_bound_to(server, account_id, device_id) {
+                bail!("existing scoped vault has a different encrypted session binding")
+            }
+            return Ok(Some(existing));
+        }
+        let migrated = Self {
+            path: target,
+            key: SecretBox::new(Box::new(*self.key.expose_secret())),
+            data: self.data.clone(),
+        };
+        migrated.persist()?;
+        Ok(Some(migrated))
     }
 
     fn migrate_legacy_conversations_at(&mut self, path: &Path) -> Result<usize> {
@@ -2153,7 +2533,7 @@ fn finalize_history_transfer(
         .iter()
         .find(|conversation| conversation.id == transfer.conversation_id)
         .map(|conversation| conversation.peer_handle.clone())
-        .unwrap_or_else(|| "encrypted-peer".into());
+        .unwrap_or_else(|| UNRESOLVED_PEER_HANDLE.into());
     let mut inserted_count = 0u32;
     for message in messages {
         if data.messages.iter().any(|existing| {
@@ -2247,6 +2627,14 @@ fn validate_receipt_batch(batch: &ReceiptBatch) -> Result<()> {
 
 fn normalize_id_prefix(prefix: &str, label: &str) -> Result<String> {
     let prefix = prefix.trim().trim_start_matches('#').to_ascii_lowercase();
+    // Native clients pass the full hyphenated UUID from the snapshot, while
+    // the terminal accepts compact hexadecimal prefixes. Normalize complete
+    // UUIDs without accepting malformed or partially hyphenated prefixes.
+    if prefix.len() == 36
+        && let Ok(id) = Uuid::parse_str(&prefix)
+    {
+        return Ok(id.simple().to_string());
+    }
     if prefix.len() < 4 || !prefix.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         bail!("{label} id prefix must contain at least four hexadecimal characters")
     }
@@ -2302,7 +2690,7 @@ fn upsert_conversation(data: &mut VaultData, conversation: VaultConversation) {
         .iter_mut()
         .find(|item| item.id == conversation.id)
     {
-        if existing.peer_handle == "encrypted-peer" {
+        if existing.peer_handle == UNRESOLVED_PEER_HANDLE {
             existing.peer_handle = conversation.peer_handle;
         }
         return;
@@ -2314,6 +2702,7 @@ fn decrypt_vault(encoded: &[u8], key: &[u8; 32]) -> Result<(VaultData, bool)> {
     let envelope: EncryptedVault = serde_json::from_slice(encoded)?;
     let (aad, migrated) = match envelope.format.as_str() {
         VAULT_FORMAT => (VAULT_AAD, false),
+        PRE_ATTENTION_VAULT_FORMAT => (PRE_ATTENTION_VAULT_AAD, true),
         LEGACY_VAULT_FORMAT => (LEGACY_VAULT_AAD, true),
         _ => bail!("unsupported encrypted vault version"),
     };
@@ -2334,7 +2723,11 @@ fn decrypt_vault(encoded: &[u8], key: &[u8; 32]) -> Result<(VaultData, bool)> {
             )
             .map_err(|_| anyhow::anyhow!("vault authentication failed or key changed"))?,
     );
-    Ok((serde_json::from_slice(&plaintext)?, migrated))
+    let data: VaultData = serde_json::from_slice(&plaintext)?;
+    if data.version > VAULT_DATA_VERSION {
+        bail!("unsupported vault data version; use a compatible Mutte client")
+    }
+    Ok((data, migrated))
 }
 
 fn migrate_vault_data(data: &mut VaultData) -> bool {
@@ -2359,6 +2752,146 @@ fn migrate_vault_data(data: &mut VaultData) -> bool {
     }
     data.version = VAULT_DATA_VERSION;
     true
+}
+
+fn load_active_relay_vault_at(
+    storage_directory: &Path,
+    server: &Url,
+    device_id: Uuid,
+    key: &[u8; 32],
+) -> Result<Option<Vault>> {
+    let locator_path =
+        relay_device_directory(storage_directory, server, device_id)?.join("active-account.json");
+    let encoded = match fs::read(&locator_path) {
+        Ok(encoded) => encoded,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return discover_active_relay_vault_at(storage_directory, server, device_id, key);
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let envelope: EncryptedVault =
+        serde_json::from_slice(&encoded).context("read active relay account locator")?;
+    if envelope.format != ACTIVE_ACCOUNT_FORMAT {
+        bail!("unsupported active relay account locator version")
+    }
+    let nonce = URL_SAFE_NO_PAD
+        .decode(envelope.nonce)
+        .context("decode active relay account nonce")?;
+    let nonce: [u8; 24] = nonce
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("invalid active relay account nonce length"))?;
+    let ciphertext = URL_SAFE_NO_PAD
+        .decode(envelope.ciphertext)
+        .context("decode active relay account ciphertext")?;
+    let aad = active_account_aad(server, device_id)?;
+    let plaintext = Zeroizing::new(
+        XChaCha20Poly1305::new(key.into())
+            .decrypt(
+                XNonce::from_slice(&nonce),
+                Payload {
+                    msg: &ciphertext,
+                    aad: &aad,
+                },
+            )
+            .map_err(|_| anyhow::anyhow!("decrypt active relay account locator"))?,
+    );
+    let locator: ActiveAccount =
+        serde_json::from_slice(&plaintext).context("decode active relay account locator")?;
+    let vault_path =
+        relay_account_device_vault_path(storage_directory, server, locator.account_id, device_id)?;
+    if !vault_path.exists() {
+        return discover_active_relay_vault_at(storage_directory, server, device_id, key);
+    }
+    let vault = Vault::open_at(vault_path, key)?;
+    if !vault.is_bound_to(server, locator.account_id, device_id) {
+        bail!("active scoped vault has a different encrypted session binding")
+    }
+    Ok(Some(vault))
+}
+
+/// Repairs the narrow crash window between persisting the first scoped
+/// session and persisting its encrypted active-account locator. Only UUID
+/// account directories containing a vault whose encrypted session proves the
+/// exact relay/account/device binding are candidates. Ambiguity fails closed.
+fn discover_active_relay_vault_at(
+    storage_directory: &Path,
+    server: &Url,
+    device_id: Uuid,
+    key: &[u8; 32],
+) -> Result<Option<Vault>> {
+    let accounts_directory =
+        relay_device_directory(storage_directory, server, device_id)?.join("accounts");
+    let entries = match fs::read_dir(&accounts_directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let mut discovered: Option<(Uuid, Vault)> = None;
+
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let Some(account_id) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| Uuid::parse_str(name).ok())
+        else {
+            continue;
+        };
+        let vault_path = entry.path().join("vault.json");
+        if !vault_path.is_file() {
+            continue;
+        }
+        let vault = Vault::open_at(vault_path, key)?;
+        if !vault.is_bound_to(server, account_id, device_id) {
+            continue;
+        }
+        if discovered.is_some() {
+            bail!("multiple scoped vaults match the relay and device binding")
+        }
+        discovered = Some((account_id, vault));
+    }
+
+    let Some((account_id, vault)) = discovered else {
+        return Ok(None);
+    };
+    set_active_relay_account_at(storage_directory, server, device_id, account_id, key)?;
+    Ok(Some(vault))
+}
+
+fn set_active_relay_account_at(
+    storage_directory: &Path,
+    server: &Url,
+    device_id: Uuid,
+    account_id: Uuid,
+    key: &[u8; 32],
+) -> Result<()> {
+    let directory = relay_device_directory(storage_directory, server, device_id)?;
+    fs::create_dir_all(&directory)?;
+    set_private_dir(&directory)?;
+    let plaintext = Zeroizing::new(serde_json::to_vec(&ActiveAccount { account_id })?);
+    let nonce = rand::random::<[u8; 24]>();
+    let aad = active_account_aad(server, device_id)?;
+    let ciphertext = XChaCha20Poly1305::new(key.into())
+        .encrypt(
+            XNonce::from_slice(&nonce),
+            Payload {
+                msg: &plaintext,
+                aad: &aad,
+            },
+        )
+        .map_err(|_| anyhow::anyhow!("encrypt active relay account locator"))?;
+    let envelope = EncryptedVault {
+        format: ACTIVE_ACCOUNT_FORMAT.to_owned(),
+        nonce: URL_SAFE_NO_PAD.encode(nonce),
+        ciphertext: URL_SAFE_NO_PAD.encode(ciphertext),
+    };
+    write_private(
+        &directory.join("active-account.json"),
+        &serde_json::to_vec_pretty(&envelope)?,
+    )
 }
 
 fn config_dir() -> Result<PathBuf> {
@@ -2434,6 +2967,210 @@ mod tests {
     use super::*;
 
     #[test]
+    fn relay_origin_scope_canonicalizes_default_ports_and_separates_origins() {
+        let root = PathBuf::from("storage");
+        let account_id = Uuid::new_v4();
+        let device_id = Uuid::new_v4();
+        let canonical_https = Url::parse("https://api.mutte.me").unwrap();
+        let equivalent_https =
+            Url::parse("https://API.MUTTE.ME:443/a/path?ignored=yes#fragment").unwrap();
+        let canonical_http = Url::parse("http://relay.test").unwrap();
+        let equivalent_http = Url::parse("http://RELAY.TEST:80/").unwrap();
+        let nondefault_https = Url::parse("https://api.mutte.me:8443").unwrap();
+        let staging = Url::parse("https://api-staging.mutte.me").unwrap();
+
+        assert_eq!(
+            RelayOrigin::from_url(&canonical_https).unwrap().as_str(),
+            "https://api.mutte.me"
+        );
+        assert_eq!(
+            RelayOrigin::from_url(&canonical_https).unwrap(),
+            RelayOrigin::from_url(&equivalent_https).unwrap()
+        );
+        assert_eq!(
+            RelayOrigin::from_url(&canonical_http).unwrap(),
+            RelayOrigin::from_url(&equivalent_http).unwrap()
+        );
+        assert_eq!(
+            relay_account_device_vault_path(&root, &canonical_https, account_id, device_id)
+                .unwrap(),
+            relay_account_device_vault_path(&root, &equivalent_https, account_id, device_id)
+                .unwrap()
+        );
+        assert_ne!(
+            relay_account_device_vault_path(&root, &canonical_https, account_id, device_id)
+                .unwrap(),
+            relay_account_device_vault_path(&root, &staging, account_id, device_id).unwrap()
+        );
+        assert_ne!(
+            relay_local_identity_path(&root, &canonical_https).unwrap(),
+            root.join("device.json")
+        );
+        assert_eq!(
+            relay_local_identity_path(&root, &canonical_https).unwrap(),
+            relay_local_identity_path(&root, &equivalent_https).unwrap()
+        );
+        assert_ne!(
+            relay_local_identity_path(&root, &canonical_https).unwrap(),
+            relay_local_identity_path(&root, &staging).unwrap()
+        );
+        assert_ne!(
+            relay_account_device_vault_path(&root, &canonical_https, account_id, device_id)
+                .unwrap(),
+            relay_account_device_vault_path(&root, &nondefault_https, account_id, device_id)
+                .unwrap()
+        );
+        assert!(RelayOrigin::from_url(&Url::parse("file:///tmp/relay").unwrap()).is_err());
+        assert!(RelayOrigin::from_url(&Url::parse("https://user@api.mutte.me").unwrap()).is_err());
+        assert!(
+            RelayOrigin::from_url(&Url::parse("https://user:secret@api.mutte.me").unwrap())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn legacy_terminal_vault_migrates_only_to_its_encrypted_binding() {
+        let root =
+            std::env::temp_dir().join(format!("mutte-origin-scoped-migration-{}", Uuid::new_v4()));
+        let legacy_path = root.join("vault.json");
+        let key = [73u8; 32];
+        let production = Url::parse("https://api.mutte.me").unwrap();
+        let equivalent_production = Url::parse("https://API.MUTTE.ME:443/v1/").unwrap();
+        let staging = Url::parse("https://api-staging.mutte.me").unwrap();
+        let account_id = Uuid::new_v4();
+        let other_account_id = Uuid::new_v4();
+        let device_id = Uuid::new_v4();
+        let other_device_id = Uuid::new_v4();
+        let conversation_id = Uuid::new_v4();
+        let mut legacy = Vault::open_at(&legacy_path, &key).unwrap();
+        legacy
+            .upsert_conversation(VaultConversation {
+                id: conversation_id,
+                peer_handle: "production_peer".to_owned(),
+                unread: 2,
+            })
+            .unwrap();
+        let pending_envelope = CiphertextEnvelope {
+            id: Uuid::new_v4(),
+            conversation_id,
+            sender_device_id: device_id,
+            sender_handle: "production_account".to_owned(),
+            recipients: vec![Uuid::new_v4()],
+            kind: mutte_protocol::EnvelopeKind::Commit,
+            mutation_id: Some(Uuid::new_v4()),
+            ciphertext: "opaque-production-outbox".to_owned(),
+            created_at: Utc::now(),
+        };
+        legacy.queue_commit(pending_envelope).unwrap();
+        legacy
+            .save_session(
+                &production,
+                &StoredSession {
+                    access_token: SecretString::from("production-token"),
+                    device_id,
+                    profile: mutte_protocol::Profile {
+                        id: account_id,
+                        handle: "production_account".to_owned(),
+                        display_name: "Production Account".to_owned(),
+                        bio: String::new(),
+                        status: "quiet".to_owned(),
+                    },
+                },
+            )
+            .unwrap();
+
+        assert!(
+            legacy
+                .copy_to_relay_scope_if_bound_at(&root, &staging, account_id, device_id)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            legacy
+                .copy_to_relay_scope_if_bound_at(&root, &production, account_id, other_device_id)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            legacy
+                .copy_to_relay_scope_if_bound_at(&root, &production, other_account_id, device_id)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            !relay_account_device_vault_path(&root, &staging, account_id, device_id)
+                .unwrap()
+                .exists()
+        );
+
+        let migrated = legacy
+            .copy_to_relay_scope_if_bound_at(&root, &equivalent_production, account_id, device_id)
+            .unwrap()
+            .expect("matching encrypted binding migrates");
+        assert_eq!(migrated.conversations()[0].id, conversation_id);
+        assert_eq!(migrated.outbox().len(), 1);
+        assert!(legacy_path.exists());
+
+        let staging_path =
+            relay_account_device_vault_path(&root, &staging, account_id, device_id).unwrap();
+        let mut staging_vault = Vault::open_at(staging_path, &key).unwrap();
+        assert!(staging_vault.conversations().is_empty());
+        assert!(staging_vault.outbox().is_empty());
+        staging_vault
+            .save_session(
+                &staging,
+                &StoredSession {
+                    access_token: SecretString::from("staging-token"),
+                    device_id,
+                    profile: mutte_protocol::Profile {
+                        id: account_id,
+                        handle: "staging_account".to_owned(),
+                        display_name: "Staging Account".to_owned(),
+                        bio: String::new(),
+                        status: "quiet".to_owned(),
+                    },
+                },
+            )
+            .unwrap();
+
+        set_active_relay_account_at(&root, &production, device_id, account_id, &key).unwrap();
+        let active = load_active_relay_vault_at(&root, &production, device_id, &key)
+            .unwrap()
+            .expect("production active vault");
+        assert_eq!(active.conversations()[0].id, conversation_id);
+        let recovered_staging = load_active_relay_vault_at(&root, &staging, device_id, &key)
+            .unwrap()
+            .expect("a uniquely bound scoped session repairs its missing locator");
+        assert_eq!(
+            recovered_staging
+                .load_session(&staging)
+                .expect("recovered staging session")
+                .profile
+                .handle,
+            "staging_account"
+        );
+
+        let locator_path = relay_device_directory(&root, &production, device_id)
+            .unwrap()
+            .join("active-account.json");
+        let staging_locator_path = relay_device_directory(&root, &staging, device_id)
+            .unwrap()
+            .join("active-account.json");
+        assert!(staging_locator_path.exists());
+        fs::create_dir_all(staging_locator_path.parent().unwrap()).unwrap();
+        fs::copy(&locator_path, &staging_locator_path).unwrap();
+        assert!(load_active_relay_vault_at(&root, &staging, device_id, &key).is_err());
+
+        let mut tampered: EncryptedVault =
+            serde_json::from_slice(&fs::read(&locator_path).unwrap()).unwrap();
+        tampered.ciphertext.push('A');
+        fs::write(&locator_path, serde_json::to_vec_pretty(&tampered).unwrap()).unwrap();
+        assert!(load_active_relay_vault_at(&root, &production, device_id, &key).is_err());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn legacy_config_directory_moves_without_overwriting_mutte_data() {
         let root = std::env::temp_dir().join(format!("mutte-config-rebrand-{}", Uuid::new_v4()));
         let legacy = root.join("omt");
@@ -2450,6 +3187,123 @@ mod tests {
         migrate_config_dir(&legacy, &current).unwrap();
         assert_eq!(fs::read(current.join("marker")).unwrap(), b"legacy");
         assert!(legacy.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn write_test_vault(path: &Path, key: &[u8; 32], format: &str, data: &VaultData) {
+        let nonce = rand::random::<[u8; 24]>();
+        let plaintext = Zeroizing::new(serde_json::to_vec(data).unwrap());
+        let ciphertext = XChaCha20Poly1305::new(key.into())
+            .encrypt(
+                XNonce::from_slice(&nonce),
+                Payload {
+                    msg: &plaintext,
+                    aad: format.as_bytes(),
+                },
+            )
+            .unwrap();
+        fs::write(
+            path,
+            serde_json::to_vec(&EncryptedVault {
+                format: format.into(),
+                nonce: URL_SAFE_NO_PAD.encode(nonce),
+                ciphertext: URL_SAFE_NO_PAD.encode(ciphertext),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn attention_upgrade_rewraps_v1_without_resetting_read_state() {
+        let root = std::env::temp_dir().join(format!("mutte-attention-upgrade-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("vault.json");
+        let key = [63; 32];
+        let id = Uuid::new_v4();
+        let read = VaultMessage {
+            id: Uuid::new_v4(),
+            conversation_id: id,
+            author: "@friend".into(),
+            text: "Already read main message".into(),
+            mine: false,
+            sent_at: Utc::now(),
+            delivery: DeliveryState::Received,
+            attachment: None,
+            reply_to: None,
+            thread_root: None,
+            locally_read: true,
+        };
+        let unread_reply = VaultMessage {
+            id: Uuid::new_v4(),
+            text: "Unread discussion reply".into(),
+            reply_to: Some(read.id),
+            thread_root: Some(read.id),
+            locally_read: false,
+            ..read.clone()
+        };
+        let latest_read = VaultMessage {
+            id: Uuid::new_v4(),
+            ..read.clone()
+        };
+        let data = VaultData {
+            version: 2,
+            conversations: vec![VaultConversation {
+                id,
+                peer_handle: "friend".into(),
+                unread: 1,
+            }],
+            messages: vec![read, unread_reply, latest_read],
+            ..VaultData::default()
+        };
+        write_test_vault(&path, &key, "mutte-vault/v1", &data);
+        let mut upgraded = Vault::open_at(&path, &key).unwrap();
+        upgraded.set_conversation_quiet(id, true).unwrap();
+        drop(upgraded);
+        let encoded = fs::read(&path).unwrap();
+        let mut envelope: EncryptedVault = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(
+            envelope.format, "mutte-vault/v2",
+            "older binaries must reject rather than erase quiet preferences"
+        );
+        let reopened = Vault::open_at(&path, &key).unwrap();
+        assert!(reopened.conversation_preferences(id).unwrap().quiet);
+        assert_eq!(reopened.conversations()[0].unread, 1);
+        let (restored, _) = decrypt_vault(&encoded, &key).unwrap();
+        assert_eq!(
+            restored
+                .messages
+                .iter()
+                .map(|message| message.locally_read)
+                .collect::<Vec<_>>(),
+            vec![true, false, true]
+        );
+        envelope.format = "mutte-vault/v1".into();
+        assert!(
+            decrypt_vault(&serde_json::to_vec(&envelope).unwrap(), &key).is_err(),
+            "format cannot be downgraded by rewriting the unauthenticated header"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn future_vault_data_is_rejected_without_rewriting_it() {
+        let root = std::env::temp_dir().join(format!("mutte-future-vault-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("vault.json");
+        let key = [64; 32];
+        write_test_vault(
+            &path,
+            &key,
+            VAULT_FORMAT,
+            &VaultData {
+                version: u16::MAX,
+                ..VaultData::default()
+            },
+        );
+        let before = fs::read(&path).unwrap();
+        assert!(Vault::open_at(&path, &key).is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -2905,6 +3759,36 @@ mod tests {
     }
 
     #[test]
+    fn attachment_identifiers_accept_native_uuids_and_terminal_prefixes() {
+        let id = Uuid::new_v4();
+        let compact = id.simple().to_string();
+        assert_eq!(
+            normalize_id_prefix(&id.to_string(), "attachment").unwrap(),
+            compact
+        );
+        assert_eq!(
+            normalize_id_prefix(
+                &format!(" #{} ", id.to_string().to_uppercase()),
+                "attachment"
+            )
+            .unwrap(),
+            compact
+        );
+        assert_eq!(
+            normalize_id_prefix(&compact[..8], "attachment").unwrap(),
+            &compact[..8]
+        );
+        for invalid in [
+            "123",
+            "abcd-efgh",
+            "12345678-abcd",
+            "12345678-1234-1234-1234-123456789abz",
+        ] {
+            assert!(normalize_id_prefix(invalid, "attachment").is_err());
+        }
+    }
+
+    #[test]
     fn attachment_journal_and_history_backfill_survive_restart() {
         let root = std::env::temp_dir().join(format!("mutte-vault-attach-{}", Uuid::new_v4()));
         let source = root.join("quiet.txt");
@@ -2972,7 +3856,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             sender
-                .outbound_attachment_id(&cancelled.metadata.attachment_id.simple().to_string()[..8])
+                .outbound_attachment_id(&cancelled.metadata.attachment_id.to_string())
                 .unwrap(),
             cancelled.metadata.attachment_id
         );
@@ -3017,14 +3901,14 @@ mod tests {
         }
         assert!(receiver.pending_attachment_downloads().is_empty());
         receiver
-            .request_attachment_download(&attachment_id.simple().to_string()[..8])
+            .request_attachment_download(&attachment_id.to_string())
             .unwrap();
         let pending = receiver.pending_attachment_downloads();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].metadata, prepared.metadata);
         assert_eq!(
             receiver
-                .cancel_attachment_download(&attachment_id.simple().to_string()[..8])
+                .cancel_attachment_download(&attachment_id.to_string())
                 .unwrap(),
             prepared.metadata
         );
@@ -3048,6 +3932,100 @@ mod tests {
                 .local_path
                 .as_ref(),
             Some(&downloaded)
+        );
+        // iOS may relocate an application container during an update. The
+        // encrypted record must discover the verified copy in the new cache.
+        let old_cache = root.join("old-container/Downloads");
+        let new_cache = root.join("new-container/Downloads");
+        let mut writer =
+            crate::attachment::AttachmentDownload::resume_at(&old_cache, &prepared.metadata)
+                .unwrap();
+        let chunk = crate::attachment::encrypt_chunk(&source, &prepared.metadata, 0).unwrap();
+        writer.write_chunk(0, &chunk).unwrap();
+        let old_cached_path = writer.finish().unwrap();
+        let mut receiver = receiver;
+        receiver
+            .complete_attachment_download(conversation_id, message.id, old_cached_path.clone())
+            .unwrap();
+        assert!(
+            !receiver.messages()[0]
+                .attachment
+                .as_ref()
+                .unwrap()
+                .download_requested
+        );
+        drop(receiver);
+        fs::rename(root.join("old-container"), root.join("new-container")).unwrap();
+        let mut receiver = Vault::open_at(&receiver_path, &[62u8; 32]).unwrap();
+        receiver.reconcile_download_cache(&new_cache).unwrap();
+        let expected_path = new_cache.join(old_cached_path.file_name().unwrap());
+        assert_eq!(
+            receiver.messages()[0]
+                .attachment
+                .as_ref()
+                .unwrap()
+                .local_path
+                .as_ref(),
+            Some(&expected_path)
+        );
+        assert!(receiver.pending_attachment_downloads().is_empty());
+        drop(receiver);
+        let mut receiver = Vault::open_at(&receiver_path, &[62u8; 32]).unwrap();
+        assert_eq!(
+            receiver.messages()[0]
+                .attachment
+                .as_ref()
+                .unwrap()
+                .local_path
+                .as_ref(),
+            Some(&expected_path)
+        );
+
+        // A missing cache entry is available for an explicit retry; it is not
+        // a completed or endlessly active transfer, and history remains intact.
+        fs::remove_file(&expected_path).unwrap();
+        receiver.reconcile_download_cache(&new_cache).unwrap();
+        let attachment = receiver.messages()[0].attachment.as_ref().unwrap();
+        assert!(attachment.local_path.is_none());
+        assert!(!attachment.download_requested);
+        receiver
+            .request_attachment_download(&attachment_id.to_string())
+            .unwrap();
+        assert_eq!(receiver.pending_attachment_downloads().len(), 1);
+
+        // A filename/size match alone cannot authorize a relocated cache file.
+        fs::write(
+            &expected_path,
+            vec![b'x'; prepared.metadata.plaintext_size as usize],
+        )
+        .unwrap();
+        receiver
+            .commit_fallible(|data| {
+                let attachment = data.messages[0].attachment.as_mut().unwrap();
+                attachment.local_path = Some(old_cached_path);
+                Ok(())
+            })
+            .unwrap();
+        receiver.reconcile_download_cache(&new_cache).unwrap();
+        assert!(
+            receiver.messages()[0]
+                .attachment
+                .as_ref()
+                .unwrap()
+                .local_path
+                .is_none()
+        );
+        assert!(
+            !receiver.messages()[0]
+                .attachment
+                .as_ref()
+                .unwrap()
+                .download_requested
+        );
+        assert_eq!(receiver.messages()[0].id, message.id);
+        assert!(
+            expected_path.is_file(),
+            "reconciliation never deletes user/cache files"
         );
         fs::remove_dir_all(root).unwrap();
     }
