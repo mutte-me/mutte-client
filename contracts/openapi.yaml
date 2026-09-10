@@ -267,7 +267,7 @@ paths:
           description: Profile
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/Profile"}
+              schema: {$ref: "#/components/schemas/ProfileDetails"}
         "401": {$ref: "#/components/responses/Error"}
     patch:
       tags: [account]
@@ -282,7 +282,7 @@ paths:
           description: Updated profile
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/Profile"}
+              schema: {$ref: "#/components/schemas/ProfileDetails"}
         "400": {$ref: "#/components/responses/Error"}
   /v1/users/{handle}/key-packages/claim:
     parameters:
@@ -657,10 +657,19 @@ components:
         display_name: {type: string}
         bio: {type: string}
         status: {type: string}
+    ProfileDetails:
+      allOf:
+        - {$ref: "#/components/schemas/Profile"}
+        - type: object
+          required: [avatar_jpeg]
+          properties:
+            avatar_jpeg: {type: [string, "null"], maxLength: 65536, description: "Base64 JPEG profile photo. Stored as relay-readable account metadata."}
     ProfilePatch:
       type: object
       additionalProperties: false
       properties:
+        display_name: {type: string, minLength: 1, maxLength: 64, description: "Trimmed display name; control characters are rejected."}
+        avatar_jpeg: {type: string, maxLength: 65536, description: "Base64 JPEG, at most 256 pixels per side and 49152 decoded bytes. Empty string removes the photo; omitted preserves it. Server strips metadata."}
         bio: {type: string, maxLength: 160}
         status: {type: string, maxLength: 12}
     DeviceList:

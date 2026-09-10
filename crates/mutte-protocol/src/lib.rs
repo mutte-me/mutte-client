@@ -81,8 +81,18 @@ pub struct Profile {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct ProfilePatch {
+    pub display_name: Option<String>,
+    /// Base64 JPEG, at most 256×256 and 49,152 decoded bytes. Empty removes it.
+    pub avatar_jpeg: Option<String>,
     pub bio: Option<String>,
     pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProfileDetails {
+    #[serde(flatten)]
+    pub profile: Profile,
+    pub avatar_jpeg: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

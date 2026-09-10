@@ -473,6 +473,27 @@ mod tests {
         metadata.plaintext_size = MAX_ATTACHMENT_BYTES + 1;
         assert!(validate_metadata(&metadata).is_err());
     }
+
+    #[test]
+    fn source_size_boundary_accepts_limit_and_rejects_one_extra_byte() {
+        let root = std::env::temp_dir().join(format!("mutte-attachment-limit-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("boundary.bin");
+        let file = File::create(&source).unwrap();
+        file.set_len(MAX_ATTACHMENT_BYTES).unwrap();
+        let prepared = prepare(&source).unwrap();
+        assert_eq!(prepared.metadata.plaintext_size, MAX_ATTACHMENT_BYTES);
+        assert_eq!(
+            prepared.metadata.chunk_count as u64 * ATTACHMENT_CHUNK_BYTES as u64,
+            MAX_ATTACHMENT_BYTES
+        );
+        validate_source(&source, &prepared.metadata).unwrap();
+        file.set_len(MAX_ATTACHMENT_BYTES + 1).unwrap();
+        assert!(prepare(&source).is_err());
+        assert!(validate_source(&source, &prepared.metadata).is_err());
+        drop(file);
+        fs::remove_dir_all(root).unwrap();
+    }
 }
 
 #[cfg(not(unix))]

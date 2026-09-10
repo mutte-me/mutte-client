@@ -23,7 +23,8 @@ pub(crate) struct ThemePalette {
     pub(crate) text: Color,
     pub(crate) secondary: Color,
     pub(crate) muted: Color,
-    pub(crate) mint: Color,
+    pub(crate) accent: Color,
+    pub(crate) accent_fill: Color,
     pub(crate) success: Color,
     pub(crate) warning: Color,
     pub(crate) focus: Color,
@@ -31,22 +32,25 @@ pub(crate) struct ThemePalette {
 }
 
 impl ThemePalette {
-    pub(crate) const fn trust_lens() -> Self {
+    pub(crate) const fn brand_violet() -> Self {
         Self {
-            bg: Color::Rgb(13, 22, 21),
-            panel: Color::Rgb(18, 30, 26),
-            selected: Color::Rgb(29, 43, 32),
-            keycap: Color::Rgb(23, 37, 31),
-            line: Color::Rgb(75, 75, 64),
-            line_strong: Color::Rgb(120, 115, 100),
-            text: Color::Rgb(227, 203, 168),
-            secondary: Color::Rgb(181, 168, 136),
-            muted: Color::Rgb(145, 139, 113),
-            mint: Color::Rgb(115, 166, 132),
-            success: Color::Rgb(155, 218, 99),
-            warning: Color::Rgb(200, 179, 136),
-            focus: Color::Rgb(213, 201, 144),
-            danger: Color::Rgb(211, 138, 124),
+            bg: Color::Rgb(12, 14, 20),
+            panel: Color::Rgb(20, 24, 33),
+            selected: Color::Rgb(38, 24, 61),
+            keycap: Color::Rgb(26, 18, 51),
+            line: Color::Rgb(112, 108, 126),
+            line_strong: Color::Rgb(140, 128, 167),
+            text: Color::Rgb(248, 250, 252),
+            secondary: Color::Rgb(154, 163, 184),
+            muted: Color::Rgb(148, 157, 175),
+            // Brand violet is a fill; lighter lavender keeps small terminal
+            // text readable on every dark surface.
+            accent: Color::Rgb(167, 139, 250),
+            accent_fill: Color::Rgb(124, 58, 237),
+            success: Color::Rgb(34, 197, 94),
+            warning: Color::Rgb(224, 166, 90),
+            focus: Color::Rgb(196, 181, 253),
+            danger: Color::Rgb(248, 113, 113),
         }
     }
 
@@ -120,7 +124,8 @@ impl ThemePalette {
             secondary: ensure_contrast_across(secondary, &text_surfaces, MINIMUM_TEXT_CONTRAST)
                 .into(),
             muted: ensure_contrast_across(muted, &text_surfaces, MINIMUM_TEXT_CONTRAST).into(),
-            mint: ensure_contrast_across(accent, &text_surfaces, MINIMUM_TEXT_CONTRAST).into(),
+            accent: ensure_contrast_across(accent, &text_surfaces, MINIMUM_TEXT_CONTRAST).into(),
+            accent_fill: accent.into(),
             success: ensure_contrast_across(success, &text_surfaces, MINIMUM_TEXT_CONTRAST).into(),
             warning: ensure_contrast_across(warning, &text_surfaces, MINIMUM_TEXT_CONTRAST).into(),
             focus: ensure_contrast_across(focus, &text_surfaces, MINIMUM_TEXT_CONTRAST).into(),
@@ -131,7 +136,7 @@ impl ThemePalette {
 
 impl Default for ThemePalette {
     fn default() -> Self {
-        Self::trust_lens()
+        Self::brand_violet()
     }
 }
 
@@ -388,22 +393,27 @@ red = "#D14D41"
     }
 
     #[test]
-    fn missing_omarchy_state_uses_the_trust_lens_fallback() {
+    fn missing_omarchy_state_uses_the_brand_violet_fallback() {
         let manager = ThemeManager::from_colors_path(None);
 
-        assert_eq!(manager.palette(), ThemePalette::trust_lens());
+        assert_eq!(manager.palette(), ThemePalette::brand_violet());
+        assert_eq!(manager.palette().accent_fill, Color::Rgb(124, 58, 237));
+        assert_eq!(manager.palette().accent, Color::Rgb(167, 139, 250));
     }
 
     #[test]
     fn derived_text_roles_meet_accessible_contrast() {
-        for source in [DARK_THEME, LIGHT_THEME] {
-            let palette = ThemePalette::from_colors_toml(source).expect("valid theme");
+        for palette in [
+            ThemePalette::default(),
+            ThemePalette::from_colors_toml(DARK_THEME).expect("dark theme"),
+            ThemePalette::from_colors_toml(LIGHT_THEME).expect("light theme"),
+        ] {
             for background in [palette.bg, palette.panel, palette.selected, palette.keycap] {
                 for color in [
                     palette.text,
                     palette.secondary,
                     palette.muted,
-                    palette.mint,
+                    palette.accent,
                     palette.success,
                     palette.warning,
                     palette.focus,
@@ -411,9 +421,28 @@ red = "#D14D41"
                 ] {
                     assert!(
                         contrast_ratio(color_rgb(color), color_rgb(background))
-                            >= MINIMUM_TEXT_CONTRAST
+                            >= MINIMUM_TEXT_CONTRAST,
+                        "{color:?} on {background:?}"
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn brand_fills_and_dividers_have_readable_contrast() {
+        let palette = ThemePalette::default();
+        assert!(
+            contrast_ratio(
+                color_rgb(palette.contrasting_text(palette.accent_fill)),
+                color_rgb(palette.accent_fill),
+            ) >= MINIMUM_TEXT_CONTRAST
+        );
+        for line in [palette.line, palette.line_strong] {
+            for background in [palette.bg, palette.panel, palette.selected, palette.keycap] {
+                assert!(
+                    contrast_ratio(color_rgb(line), color_rgb(background)) >= MINIMUM_LINE_CONTRAST
+                );
             }
         }
     }

@@ -213,6 +213,40 @@ impl Device {
         Self::load_or_create_at(project.config_dir().join("device.json"), storage_key)
     }
 
+    /// Remove one scoped encrypted identity so the next bootstrap creates a
+    /// fresh device ID. Message vaults and the platform master key are not
+    /// touched.
+    pub fn retire_at(path: impl AsRef<Path>) -> Result<(), DeviceError> {
+        match fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Copy an encrypted identity into a new storage scope only when its
+    /// decrypted device UUID matches an independently authenticated binding.
+    /// The source remains in place as a rollback backup.
+    pub fn copy_to_if_device_id_matches(
+        source: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        storage_key: &[u8; 32],
+        expected_device_id: Uuid,
+    ) -> Result<bool, DeviceError> {
+        let source = source.as_ref();
+        let destination = destination.as_ref();
+        if destination.exists() || !source.exists() {
+            return Ok(false);
+        }
+        let mut device = Self::load(source.to_path_buf(), storage_key)?;
+        if device.id != expected_device_id {
+            return Ok(false);
+        }
+        device.path = destination.to_path_buf();
+        device.persist()?;
+        Ok(true)
+    }
+
     pub fn load_or_create_at(
         path: impl Into<PathBuf>,
         storage_key: &[u8; 32],
@@ -1225,6 +1259,53 @@ mod tests {
         assert!(Device::load_or_create_at(&path, &[8u8; 32]).is_err());
         let second = Device::load_or_create_at(&path, &key).expect("reload identity");
         assert_eq!(first_id, second.id());
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn retired_identity_is_replaced_without_touching_its_directory() {
+        let root = std::env::temp_dir().join(format!("mutte-core-retire-{}", Uuid::new_v4()));
+        let path = root.join("device.json");
+        let key = [9u8; 32];
+        let first = Device::load_or_create_at(&path, &key).expect("create identity");
+        let first_id = first.id();
+        drop(first);
+
+        Device::retire_at(&path).expect("retire identity");
+        assert!(!path.exists());
+        let replacement = Device::load_or_create_at(&path, &key).expect("replace identity");
+
+        assert_ne!(replacement.id(), first_id);
+        assert!(root.exists());
+        drop(replacement);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn identity_copy_requires_an_independently_bound_device_id() {
+        let root =
+            std::env::temp_dir().join(format!("mutte-core-copy-identity-{}", Uuid::new_v4()));
+        let source = root.join("device.json");
+        let target = root.join("scoped").join("device.json");
+        let wrong_target = root.join("wrong").join("device.json");
+        let key = [41u8; 32];
+        let source_device = Device::load_or_create_at(&source, &key).expect("create identity");
+
+        assert!(
+            !Device::copy_to_if_device_id_matches(&source, &wrong_target, &key, Uuid::new_v4(),)
+                .expect("reject mismatched binding")
+        );
+        assert!(!wrong_target.exists());
+
+        assert!(
+            Device::copy_to_if_device_id_matches(&source, &target, &key, source_device.id())
+                .expect("copy matching identity")
+        );
+        let copied = Device::load_or_create_at(&target, &key).expect("open copied identity");
+        assert_eq!(copied.id(), source_device.id());
+        assert!(source.exists());
+        drop(copied);
+        drop(source_device);
         fs::remove_dir_all(root).expect("remove fixture");
     }
 
