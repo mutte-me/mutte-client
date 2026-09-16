@@ -3958,7 +3958,7 @@ mod tests {
         fs::rename(root.join("old-container"), root.join("new-container")).unwrap();
         let mut receiver = Vault::open_at(&receiver_path, &[62u8; 32]).unwrap();
         receiver.reconcile_download_cache(&new_cache).unwrap();
-        let expected_path = new_cache.join(old_cached_path.file_name().unwrap());
+        let expected_path = new_cache.join(old_cached_path.strip_prefix(&old_cache).unwrap());
         assert_eq!(
             receiver.messages()[0]
                 .attachment

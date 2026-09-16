@@ -161,7 +161,21 @@ pub fn existing_download_at(
     validate_metadata(metadata)?;
     let path = final_download_path(directory, metadata);
     if !path.exists() {
-        return Ok(None);
+        // Older clients used only eight ID characters in a shared directory.
+        // Reuse that cache only when its contents match; a prefix collision
+        // must not prevent this attachment from downloading to its own path.
+        let prefix = &metadata.attachment_id.simple().to_string()[..8];
+        let legacy_path = directory.join(format!("{prefix}-{}", metadata.filename));
+        return Ok(
+            if legacy_path.is_file()
+                && fs::metadata(&legacy_path)?.len() == metadata.plaintext_size
+                && hash_file(&legacy_path)? == metadata.plaintext_hash
+            {
+                Some(legacy_path)
+            } else {
+                None
+            },
+        );
     }
     if fs::metadata(&path)?.len() != metadata.plaintext_size
         || hash_file(&path)? != metadata.plaintext_hash
@@ -192,6 +206,12 @@ impl AttachmentDownload {
         set_private_dir(directory)?;
         let temporary_path = directory.join(format!(".{}.part", metadata.attachment_id));
         let final_path = final_download_path(directory, metadata);
+        let final_directory = final_path
+            .parent()
+            .context("invalid attachment download path")?;
+        fs::create_dir_all(final_directory)?;
+        set_private_dir(final_directory)?;
+        sync_parent(directory)?;
         let mut options = OpenOptions::new();
         options.create(true).read(true).write(true);
         #[cfg(unix)]
@@ -295,6 +315,11 @@ impl AttachmentDownload {
                 .parent()
                 .context("invalid attachment download path")?,
         )?;
+        sync_parent(
+            self.temporary_path
+                .parent()
+                .context("invalid attachment partial path")?,
+        )?;
         Ok(self.final_path)
     }
 }
@@ -379,8 +404,12 @@ fn downloads_dir() -> Result<PathBuf> {
 }
 
 fn final_download_path(directory: &Path, metadata: &AttachmentMetadata) -> PathBuf {
-    let prefix = &metadata.attachment_id.simple().to_string()[..8];
-    directory.join(format!("{prefix}-{}", metadata.filename))
+    // Separate namespacing from the filename so the full ID prevents collisions
+    // without exceeding the filename length accepted by validate_metadata.
+    // The non-hex prefix cannot collide with a legacy eight-hex-ID filename.
+    directory
+        .join(format!("attachment-{}", metadata.attachment_id))
+        .join(&metadata.filename)
 }
 
 #[cfg(unix)]

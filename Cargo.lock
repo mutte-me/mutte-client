@@ -2553,7 +2553,7 @@ dependencies = [
 
 [[package]]
 name = "mutte"
-version = "0.1.0-alpha.6"
+version = "0.1.0-alpha.7"
 dependencies = [
  "anyhow",
  "base64",
@@ -2580,7 +2580,7 @@ dependencies = [
 
 [[package]]
 name = "mutte-client"
-version = "0.1.0-alpha.6"
+version = "0.1.0-alpha.7"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2603,7 +2603,7 @@ dependencies = [
 
 [[package]]
 name = "mutte-core"
-version = "0.1.0-alpha.6"
+version = "0.1.0-alpha.7"
 dependencies = [
  "anyhow",
  "base64",
@@ -2627,7 +2627,7 @@ dependencies = [
 
 [[package]]
 name = "mutte-protocol"
-version = "0.1.0-alpha.6"
+version = "0.1.0-alpha.7"
 dependencies = [
  "chrono",
  "serde",
@@ -2637,7 +2637,7 @@ dependencies = [
 
 [[package]]
 name = "mutte-store"
-version = "0.1.0-alpha.6"
+version = "0.1.0-alpha.7"
 dependencies = [
  "anyhow",
  "argon2",
